@@ -21,6 +21,7 @@ from core.tools.document_tool import DocumentActionParameters, DocumentTool
 from core.tools.intent_tool import IntentContinuityTool, IntentToolParameters
 from core.tools.restoration_tool import RestorationTool, RestorationToolParameters
 from core.tools.terminal_tool import CommandPolicy, TerminalActionParameters, TerminalTool
+from core.tools.voice_tool import VoiceTool, VoiceToolParameters
 from core.tools.web_research_tool import (
     SafeHTMLTextExtractor,
     WebResearchParameters,
@@ -55,5 +56,7 @@ __all__ = [
     "IntentToolParameters",
     "RestorationTool",
     "RestorationToolParameters",
+    "VoiceTool",
+    "VoiceToolParameters",
 ]
 

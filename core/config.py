@@ -208,6 +208,36 @@ class Settings(BaseSettings):
         description="Max time to poll for top-level window after process spawn",
     )
 
+    # Phase 11: Voice Interface Settings
+    voice_enabled: bool = Field(
+        default=True,
+        description="Whether Push-to-Talk voice interface subsystem is enabled",
+    )
+    voice_stt_provider: Literal["mock", "whisper"] = Field(
+        default="mock",
+        description="Speech-to-Text provider engine ('mock' or 'whisper')",
+    )
+    voice_tts_provider: Literal["mock", "windows_sapi"] = Field(
+        default="mock",
+        description="Text-to-Speech provider engine ('mock' or 'windows_sapi')",
+    )
+    voice_sample_rate: int = Field(
+        default=16000,
+        description="Audio sampling rate in Hz for microphone capture",
+    )
+    voice_max_recording_seconds: float = Field(
+        default=30.0,
+        description="Maximum recording window duration in seconds for Push-to-Talk",
+    )
+    voice_strip_prefix: bool = Field(
+        default=True,
+        description="Whether to strip conversational invocation prefixes (e.g. 'ORBIS, ')",
+    )
+    voice_tts_voice_name: str = Field(
+        default="Microsoft David Desktop",
+        description="Name of the voice for Text-to-Speech synthesis",
+    )
+
 
     def is_excluded(
         self, process_name: Optional[str], window_title: Optional[str]

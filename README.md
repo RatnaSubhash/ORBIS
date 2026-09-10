@@ -238,17 +238,62 @@ Key configuration options in `core/config.py`:
 .\.venv\Scripts\python.exe demo_phase10.py
 ```
 
+### Phase 11: Privacy-Preserving Push-to-Talk Local Voice Interface (Verified)
+- **Interface Adapter Only**: Voice is strictly an adapter layer on top of the authoritative agent lifecycle:
+  `User speech -> Push-to-Talk capture -> Local STT -> VoiceNormalizer -> AgentOrchestrator -> HierarchicalPlanner / Safety / Approval / Tools -> Concise Summary -> Local TTS -> Spoken Audio`.
+  Does not bypass existing planner, TaskExecutor, risk assessment, verification, or approval gates.
+- **Push-to-Talk Only**: No always-on recording, ambient monitoring, microphone surveillance, wake-words, or voice biometrics.
+- **Microphone Protection Invariant**: The LLM/planner cannot activate the microphone. `VoiceTool` allows outbound speech synthesis and status inspection, and strictly prohibits autonomous listening or recording.
+- **Two-Step Approval Invariant**: The original spoken command can never count as its own authorization. A separate, explicit confirmation interaction ("Yes, proceed") is required to satisfy approval gates.
+- **Privacy Preservation**: Raw audio is held strictly in application memory (`AudioBuffer`) and is released immediately after transcription. Zero audio files (`.wav`/`.mp3`) are written to disk during normal operation. Zero audio in SQLite.
+- **Safe Speech Formatting**: `VoiceNormalizer` removes Markdown code fences, tables, headers, and raw JSON before vocalization; ensures redacted credentials (`[REDACTED API KEY]`) are never spoken aloud.
+- **Modular Production & Mock Providers**:
+  - Audio Capture: `SoundDeviceAudioCapture` (hardware PortAudio capture) / `MockAudioCapture` (in-memory deterministic).
+  - Speech-to-Text: `FasterWhisperSTTProvider` (local CTranslate2 Whisper) / `MockSTTProvider` (offline deterministic).
+  - Text-to-Speech: `WindowsSapiTTSProvider` (native Windows SAPI5 Microsoft David/Zira Desktop) / `MockTTSProvider` (offline deterministic).
+
+---
+
+### Master Roadmap
+- **Phase 1** — Foundation + Tool Contract + Minimal Agent Shell *(Complete)*
+- **Phase 2** — Passive Workspace Observation + Base Desktop Tools *(Complete)*
+- **Phase 3** — Session Segmentation + Context DNA Engine *(Complete)*
+- **Phase 4** — Knowledge Graph + Semantic Vector Memory *(Complete)*
+- **Phase 5** — First Vertical-Slice MVP *(Complete)*
+- **Phase 6** — Multi-Step Agent Brain & Hierarchical Planner *(Complete)*
+- **Phase 7** — Web Research & Controlled Terminal Automation *(Complete)*
+- **Phase 8** — Content & Document Generation *(Complete)*
+- **Phase 9** — Intent Continuity Engine *(Complete)*
+- **Phase 10** — Multi-App & Window Layout Restoration *(Complete)*
+- **Phase 11** — Privacy-Preserving Local Voice Interface *(Complete)*
+- **Phase 12** — Extensibility SDK & MCP
+- **Phase 13** — Safety Hardening & Cryptographic Audit
+- **Phase 14** — Desktop Cockpit HUD
+- **Phase 15** — ORBIS-WCD Evaluation
+
+---
+
+### Phase 11 Demo (Two-Way Local Voice Interface)
+```powershell
+# Deterministic offline demonstration (100% hardware-independent)
+.\.venv\Scripts\python.exe demo_phase11.py
+
+# Live Windows hardware demonstration (native SAPI5 voice playback)
+.\.venv\Scripts\python.exe demo_phase11.py --live
+```
+
 ---
 
 ## Running the Automated Test Suite
 
-All 234 unit and integration tests run deterministically offline with zero external network calls:
+All 254 unit and integration tests run deterministically offline with zero external network calls:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -v
 ```
 
 ### Test Coverage Breakdown:
+- `tests/test_voice.py`: 20 tests covering Phase 11 voice domain models (`AudioBuffer`, `TranscriptionResult`, `SpeechResult`, `VoiceState`), in-memory audio release, `MockAudioCapture` Push-to-Talk lifecycle & failure simulation, `MockSTTProvider` deterministic transcription & inaudible/silent audio detection, `MockTTSProvider` synthesis & cancellation, `VoiceNormalizer` invocation prefix stripping ("ORBIS, ..."), affirmative/negative confirmation classification, output speech formatting & secret redaction, `VoiceService` full Push-to-Talk pipeline, audio memory release invariant, empty audio safe fallback, two-step approval invariant (original command cannot self-authorize), two-step rejection ("No, cancel that"), recording timeout boundary, configuration disabled state, `VoiceTool` BaseTool compliance & verification report, `VoiceTool` strictly prohibiting agent-controlled microphone activation, `SoundDeviceAudioCapture` availability & fallback, `FasterWhisperSTTProvider` availability & empty audio handling, `WindowsSapiTTSProvider` synthesis & cancellation, and `AgentOrchestrator.run_voice_interaction()` integration.
 - `tests/test_restoration.py`: 24 tests covering Phase 10 restoration domain models, declarative plan generation (zero side-effects), ICE-guided session selection, competing stale vs active sessions, trusted canonical binary resolution, ambient PATH rejection, arbitrary executable rejection, unregistered application rejection, stale/missing local file preflight isolation, directory traversal path rejection, Windows reserved device names, UNC network path rejection, workspace containment boundary, privacy-excluded paths/titles, strict browser URL scheme validation (only http/https), browser SSRF protection, multi-monitor virtual desktop geometry with valid negative coordinates, PID-bound window discovery & unrelated window isolation, window layout modification, failure isolation across steps, transparent partial restoration reporting, risk vs approval policy separation, subprocess safety (shell=False) and credential exclusion, and Agent Orchestrator / RestorationTool integration.
 - `tests/test_ice.py`: 20 tests covering Phase 9 ICE active task inference, interrupted task inference, goal-specific completion, Git commit WIP semantics, unknown state, competing intents, recency decay, normalized cosine similarity, graph evidence, Jaccard overlap, cue boost, evidence provenance, score bounds, tie-breaking, empty evidence fallback, LLM unavailable baseline, state preservation against LLM overrides, prompt injection defense, no autonomous execution, and IntentContinuityTool integration.
 - `tests/test_content_generator.py`: 10 tests covering text generation, markdown formatting, prompt handling, grounding metadata, and character bounds.
@@ -277,9 +322,9 @@ All 234 unit and integration tests run deterministically offline with zero exter
 
 ---
 
-## Known Limitations in Phase 10
-- **No Arbitrary GUI Automation**: Phase 10 intentionally reconstructs window boundaries and positions applications to reopen previously observed resources. It does not attempt pixel-perfect internal UI state replay, form filling, or synthetic mouse/keyboard events.
-- **Trusted Applications Only**: Unregistered third-party binaries cannot be launched. Applications must be declared in the authoritative application registry with approved canonical installation locations.
-- **Windows OS Native APIs**: On non-Windows platforms, window layout operations fall back safely to `MockWindowManager` without error. Full multi-monitor display metrics and HWND manipulation are native to Windows 10/11.
-- **Zero Credentials**: Restoration intentionally excludes session cookies, login tokens, credentials, or SSH private keys.
-
+## Known Limitations in Phase 11
+- **Push-to-Talk Exclusivity**: Voice capture requires deliberate user action (hotkey or button). Always-on ambient monitoring and wake-words are excluded by architectural invariant.
+- **No Voice Biometrics**: Voice recognition does not authenticate the speaker's identity via biometric voiceprinting; authorization relies on explicit two-step confirmation interactions.
+- **Untrusted Spoken Data**: Spoken text is treated as a user request. Untrusted web or document text vocalized aloud remains passive content and cannot trigger recursive voice execution.
+- **Native Windows TTS**: `WindowsSapiTTSProvider` requires Windows (10/11) with SAPI5 speech engines installed. Non-Windows systems rely on `MockTTSProvider` or platform-specific adapters.
+- **Local STT Hardware Requirements**: `FasterWhisperSTTProvider` performs best on systems with AVX2 CPU support or CUDA-capable GPUs. Systems without `faster-whisper` installed fall back gracefully to deterministic testing providers.

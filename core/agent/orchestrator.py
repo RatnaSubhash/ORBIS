@@ -46,6 +46,7 @@ class AgentOrchestrator:
         restoration_engine: Optional[Any] = None,
         planner: Optional[Any] = None,
         executor: Optional[Any] = None,
+        voice_service: Optional[Any] = None,
     ) -> None:
         self.llm_provider = llm_provider
         self.tool_registry = tool_registry
@@ -55,6 +56,7 @@ class AgentOrchestrator:
         self.restoration_engine = restoration_engine
         self.planner = planner
         self.executor = executor
+        self.voice_service = voice_service
         self._listeners: List[EventListener] = []
 
     def add_event_listener(self, listener: EventListener) -> None:
@@ -436,3 +438,25 @@ class AgentOrchestrator:
             return {"plan": plan, "ice_result": ice_result, "message": message}
 
         return await engine.execute_restoration_plan(plan, approval_callback=approval_callback)
+
+    async def run_voice_interaction(
+        self,
+        audio: Any,
+        approval_callback: Optional[Any] = None,
+        speak_response: bool = True,
+    ) -> Any:
+        """
+        Phase 11 Voice Interface Helper:
+        Processes user speech through Push-to-Talk voice lifecycle, routing it into
+        the authoritative AgentOrchestrator planning/safety/execution path.
+        """
+        service = self.voice_service
+        if service is None:
+            from core.voice.service import VoiceService
+            service = VoiceService(orchestrator=self)
+
+        return await service.process_spoken_request(
+            audio=audio,
+            approval_callback=approval_callback,
+            speak_response=speak_response,
+        )
