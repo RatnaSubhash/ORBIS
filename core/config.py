@@ -162,6 +162,52 @@ class Settings(BaseSettings):
         description="Allowed file extensions for DocumentTool persistence",
     )
 
+    # Phase 9: Intent Continuity Engine (ICE) Settings
+    ice_inactivity_threshold_minutes: float = Field(
+        default=15.0,
+        ge=1.0,
+        le=1440.0,
+        description="Heuristic temporal inactivity threshold in minutes for ICE active/interrupted state",
+    )
+    ice_recency_half_life_hours: float = Field(
+        default=24.0,
+        ge=0.5,
+        le=720.0,
+        description="Half-life in hours for ICE exponential temporal recency decay",
+    )
+    ice_abandoned_threshold_hours: float = Field(
+        default=72.0,
+        ge=1.0,
+        le=8760.0,
+        description="Inactivity duration threshold in hours to consider stale task abandoned",
+    )
+    ice_max_intents: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description="Default max candidate intents to return from ICE",
+    )
+
+    # Phase 10: Multi-App & Window Layout Restoration Settings
+    restoration_enabled: bool = Field(
+        default=True,
+        description="Whether workspace restoration capabilities are enabled",
+    )
+    restoration_require_approval: bool = Field(
+        default=True,
+        description="Policy requiring user confirmation before multi-app workspace restoration",
+    )
+    restoration_window_bounds_check: bool = Field(
+        default=True,
+        description="Enforce virtual desktop display geometry boundary validation",
+    )
+    restoration_window_detection_timeout_seconds: float = Field(
+        default=1.5,
+        ge=0.2,
+        le=10.0,
+        description="Max time to poll for top-level window after process spawn",
+    )
+
 
     def is_excluded(
         self, process_name: Optional[str], window_title: Optional[str]

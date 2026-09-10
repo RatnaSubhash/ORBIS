@@ -18,6 +18,8 @@ from core.tools.search_provider import (
 )
 from core.tools.content_tool import ContentGeneratorParameters, ContentGeneratorTool
 from core.tools.document_tool import DocumentActionParameters, DocumentTool
+from core.tools.intent_tool import IntentContinuityTool, IntentToolParameters
+from core.tools.restoration_tool import RestorationTool, RestorationToolParameters
 from core.tools.terminal_tool import CommandPolicy, TerminalActionParameters, TerminalTool
 from core.tools.web_research_tool import (
     SafeHTMLTextExtractor,
@@ -49,5 +51,9 @@ __all__ = [
     "ContentGeneratorParameters",
     "DocumentTool",
     "DocumentActionParameters",
+    "IntentContinuityTool",
+    "IntentToolParameters",
+    "RestorationTool",
+    "RestorationToolParameters",
 ]
 

@@ -67,6 +67,33 @@ class ContinuityService:
         ]
         return any(p in q for p in patterns)
 
+    @staticmethod
+    def is_intent_query(query: str) -> bool:
+        """
+        Determines whether a user query is asking for forward-looking intent,
+        unfinished work, or next actions (Phase 9 ICE).
+        """
+        if not query or not query.strip():
+            return False
+
+        q = query.strip().lower()
+        patterns = [
+            "trying to accomplish",
+            "what was i trying to do",
+            "what was i trying to accomplish",
+            "unfinished",
+            "what remains",
+            "what should i do next",
+            "what should i probably do next",
+            "what to do next",
+            "next action",
+            "next step",
+            "suggest next",
+            "candidate next",
+            "intent continuity",
+        ]
+        return any(p in q for p in patterns)
+
     @classmethod
     def classify_query(cls, query_text: str) -> ContinuityQuery:
         """

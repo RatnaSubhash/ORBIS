@@ -98,13 +98,70 @@ ORBIS is an extensible desktop AI agent inspired by the vision of a proactive co
   - Output secret redaction (`redact_secrets`) masking API keys, GitHub tokens, AWS keys, and credentials.
 - **Zero New Dependencies**: Implemented strictly with existing `httpx` and Python standard library.
 
+### Phase 8: Content & Document Generation (Verified)
+- **ContentGeneratorTool**: Pure text/document structuring and generation (Markdown and Plain Text) decoupled from filesystem persistence.
+- **DocumentTool**: Controlled filesystem persistence with Windows path safety, traversal rejections, symlink/junction defenses, and dynamic overwrite approval gates.
+- **Multi-Step Pipeline**: Full end-to-end integration: Research -> Content Generation -> Document Persistence.
+
+### Phase 9: Intent Continuity Engine (ICE) (Verified)
+- **Intent Inference & Continuity Projection**:
+  - Shifts agent paradigm from descriptive retrospective retrieval ("What was I doing?") to normative intentionality and forward projection ("What was I trying to accomplish? What remains unfinished? What should I do next?").
+  - `IntentContinuityEngine` (`core/ice/`): Central facade coordinating multi-modal evidence extraction, scoring, classification, and synthesis.
+- **Multi-Signal Task State Classification**:
+  - Deterministic evaluation of `ACTIVE`, `INTERRUPTED`, `COMPLETED`, `ABANDONED`, and `UNKNOWN`.
+  - Goal-specific completion requirements (passing test suite for bugfixes; verified document creation for document goals; explicit user confirmation).
+  - Strict invariant: Git commits represent change evidence, NOT proof of goal completion.
+- **Explainable Heuristic Continuity Scoring**:
+  - Transparent formula balancing recency (exponential half-life decay), resource overlap (Jaccard), normalized semantic similarity ($[-1, 1] \rightarrow [0, 1]$), task state weighting, graph proximity, application continuity, and prompt cues.
+  - Formally labeled as explainable heuristic scores in $[0.0, 1.0]$, not calibrated probabilities (calibration deferred to Phase 15).
+- **Candidate Next-Action Recommendations**:
+  - Structured candidates (`NextActionCandidate`) with estimated risk, rationale, and supporting evidence IDs.
+  - Zero autonomous execution: recommendations require explicit user submission to Phase 6 planner with authoritative risk/approval gates.
+- **Authoritative Deterministic Baseline with Constrained LLM Enrichment**:
+  - Deterministic evidence extraction, scoring, and state classification are authoritative.
+  - Optional LLM strictly enriches natural language phrasing within `<untrusted_workspace_evidence>` safety delimiters.
+  - Safe fallback on sparse or empty evidence (`has_sufficient_evidence=False`).
+- **IntentContinuityTool & Orchestrator Helper**:
+  - `IntentContinuityTool` registered as read-only (`RiskLevel.LOW`) tool.
+  - `AgentOrchestrator.run_intent_continuity(query)` and `HierarchicalPlanner` intent routing.
+
+### Phase 10: Multi-App & Window Layout Restoration (Verified)
+- **Declarative Workspace Restoration Engine (`core/restoration/`)**:
+  - Grounded in Phase 9 Intent Continuity Engine (ICE) session evidence.
+  - Zero subprocess side-effects during planning; declarative `RestorationPlan` generation.
+- **Trusted Application Registry (`ApplicationRegistry`)**:
+  - Pre-approved desktop applications (`vscode`, `terminal`, `chrome`, `edge`, `notepad`).
+  - Strict canonical installation path resolution; rejects ambient PATH lookups and arbitrary user-supplied binary paths.
+  - Discrete argument lists (`shell=False`).
+- **Comprehensive Preflight Boundary Validator (`PreflightValidator`)**:
+  - Path traversal (`..`), UNC network path, and Windows reserved device name (`CON`, `NUL`, etc.) rejections.
+  - Workspace root boundary containment enforcement and privacy policy exclusions.
+  - Strict browser URI scheme allowlist: only `http:` and `https:`; rejects `file:`, `javascript:`, `chrome:`, `edge:`, etc.
+  - Phase 7 SSRF protection enforcement blocking loopback and private/cloud-metadata IPs.
+- **Multi-Monitor Geometry & Virtual Desktop Display Bounds**:
+  - Supports Windows virtual desktop geometry spanning multiple monitors.
+  - Permissive of valid negative coordinates (e.g., secondary monitor placed to the left or above the primary display).
+  - Bounded clamping only when coordinates fall completely outside the virtual screen space.
+- **PID-Bound Window Discovery & Isolated Manipulation (`BaseWindowManager`)**:
+  - Uses Win32 `EnumWindows` + `GetWindowThreadProcessId` to match top-level HWNDs strictly to the target launched PID.
+  - Never repositions, alters, or closes unrelated existing user windows.
+  - Production `WindowsWindowManager` via `ctypes` and deterministic `MockWindowManager` for 100% offline testing.
+- **Authoritative Risk vs. Approval Policy Separation**:
+  - Pure local multi-app restoration maintains truthful intrinsic `RiskLevel.LOW`.
+  - Enforces mandatory user confirmation by policy (`requires_user_approval=True`) without artificial risk inflation.
+  - Isolated step execution: failures in one step do not abort independent safe steps; reports transparent partial restorations.
+- **Agent Integration**:
+  - `RestorationTool` exposing declarative plan creation and execution via `BaseTool` contract.
+  - `AgentOrchestrator.run_restoration(query, execute, approval_callback)` helper.
+  - `HierarchicalPlanner` automatic routing for workspace restoration intent prompts.
+
 #### What is NOT Implemented Yet (Reserved for Future Phases):
-- ❌ Phase 8+ Desktop GUI (Electron / React)
 - ❌ Voice Interaction & TTS (Phase 11)
-- ❌ Browser UI Automation & DOM Scraping (Playwright / Selenium)
-- ❌ Workspace Restoration & Window Repositioning (Phase 10)
-- ❌ Task Intent Inference & Next-Action Prediction (Phase 9 - ICE)
-- ❌ Model Context Protocol (MCP) & Cryptographic Audit Chains
+- ❌ Desktop HUD & UI (Electron / React) (Phase 12)
+- ❌ Model Context Protocol (MCP) Integration (Phase 13)
+- ❌ Cryptographic Audit Chains (Phase 14)
+- ❌ Statistical Calibration, ECE Evaluation & ORBIS-WCD Dataset (Phase 15)
+- ❌ Pixel-perfect UI state restoration & arbitrary GUI automation
 - ❌ Unrestricted Shell or Background Autonomy
 
 ---
@@ -166,21 +223,47 @@ Key configuration options in `core/config.py`:
 .\.venv\Scripts\python.exe demo_phase7.py
 ```
 
+### Phase 8 Demo (Content & Document Generation)
+```powershell
+.\.venv\Scripts\python.exe demo_phase8.py
+```
+
+### Phase 9 Demo (Intent Continuity Engine)
+```powershell
+.\.venv\Scripts\python.exe demo_phase9.py
+```
+
+### Phase 10 Demo (Multi-App & Window Layout Restoration)
+```powershell
+.\.venv\Scripts\python.exe demo_phase10.py
+```
+
 ---
 
 ## Running the Automated Test Suite
 
-All 93 unit and integration tests run deterministically offline with zero external network calls:
+All 234 unit and integration tests run deterministically offline with zero external network calls:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -v
 ```
 
 ### Test Coverage Breakdown:
+- `tests/test_restoration.py`: 24 tests covering Phase 10 restoration domain models, declarative plan generation (zero side-effects), ICE-guided session selection, competing stale vs active sessions, trusted canonical binary resolution, ambient PATH rejection, arbitrary executable rejection, unregistered application rejection, stale/missing local file preflight isolation, directory traversal path rejection, Windows reserved device names, UNC network path rejection, workspace containment boundary, privacy-excluded paths/titles, strict browser URL scheme validation (only http/https), browser SSRF protection, multi-monitor virtual desktop geometry with valid negative coordinates, PID-bound window discovery & unrelated window isolation, window layout modification, failure isolation across steps, transparent partial restoration reporting, risk vs approval policy separation, subprocess safety (shell=False) and credential exclusion, and Agent Orchestrator / RestorationTool integration.
+- `tests/test_ice.py`: 20 tests covering Phase 9 ICE active task inference, interrupted task inference, goal-specific completion, Git commit WIP semantics, unknown state, competing intents, recency decay, normalized cosine similarity, graph evidence, Jaccard overlap, cue boost, evidence provenance, score bounds, tie-breaking, empty evidence fallback, LLM unavailable baseline, state preservation against LLM overrides, prompt injection defense, no autonomous execution, and IntentContinuityTool integration.
+- `tests/test_content_generator.py`: 10 tests covering text generation, markdown formatting, prompt handling, grounding metadata, and character bounds.
+- `tests/test_document_tool.py`: 10 tests covering DocumentTool file creation, plain text, markdown, traversal rejection, invalid extensions, overwrite safety gates, and physical existence checks.
+- `tests/test_phase8_integration.py`: 6 tests covering end-to-end multi-step Research -> Content -> Document pipelines.
+- `tests/test_web_research_tool.py`: 12 tests covering WebResearchTool, SafeHTMLTextExtractor, SSRF protection, URL validation, and secret masking.
+- `tests/test_terminal_tool.py`: 14 tests covering TerminalTool command allowlisting, argument validation, timeout enforcement, output capping, and approval gates.
+- `tests/test_phase7_integration.py`: 7 tests covering integrated web research and terminal automation.
+- `tests/test_hierarchical_planner.py`: 10 tests covering deterministic planning templates, DAG step dependencies, and validation.
+- `tests/test_task_executor.py`: 12 tests covering TaskExecutor step execution, DAG dependency resolution, approval gates, verification, and replanning.
+- `tests/test_continuity_service.py`: 10 tests covering ContinuityService query routing and explainable summary generation.
 - `tests/test_knowledge_graph.py`: 10 tests covering node/edge creation, duplicate prevention, GraphBuilder from Session/DNA/Events, session subgraph query, app/resource/event neighbors, SQLite persistence & reload parity, traceability, and malformed input handling.
 - `tests/test_semantic_memory.py`: 9 tests covering BaseEmbeddingProvider contract, MockEmbeddingProvider determinism and normalization, text representation generation, FAISS add/search, cosine similarity interpretation (higher = more similar), empty index, invalid $k$, metadata mapping, save/reload consistency, and index/metadata mismatch detection.
-- `tests/test_phase4_integration.py`: 2 tests covering end-to-end Session $\to$ Context DNA $\to$ Knowledge Graph $\to$ Semantic Memory, privacy preservation, and SQLite round-trip reload of both graph and vector records.
-- `tests/test_continuity_db.py`: Migration 3 schema validation, session persistence, Context DNA storage/retrieval, chronological ordering (`timestamp ASC, event_id ASC`), time-range queries, foreign key enforcement, and end-to-end evidence traceability queries.
+- `tests/test_phase4_integration.py`: 2 tests covering end-to-end Session -> Context DNA -> Knowledge Graph -> Semantic Memory, privacy preservation, and SQLite round-trip reload of both graph and vector records.
+- `tests/test_continuity_db.py`: Migration schema validation, session persistence, Context DNA storage/retrieval, chronological ordering (`timestamp ASC, event_id ASC`), time-range queries, foreign key enforcement, and end-to-end evidence traceability queries.
 - `tests/test_dna.py`: Context DNA v1.0 category verification (Temporal, Application, Resource, Activity, Privacy, Quality), schema version tag, JSON roundtrip serialization/deserialization, application switch tracking, deterministic output.
 - `tests/test_sessionizer.py`: Session model validation, empty lists, single-event sessions, multiple events, large inactivity gaps, small gaps, app switching, returning to previous apps, identical timestamps, out-of-order sorting, tie-breaking, resource deduplication, `IncrementalSessionBuilder` chronological contract, and malformed/empty event handling.
 - `tests/test_observation.py`: Event validation/serialization, observer abstraction, process switch, title change, duplicate event suppression, privacy exclusions.
@@ -194,73 +277,9 @@ All 93 unit and integration tests run deterministically offline with zero extern
 
 ---
 
-## Known Limitations in Phase 4
-- **Independent Indexes**: Phase 4 provides graph-based and semantic memory indexes separately. Final unified hybrid retrieval and ranking combining graph proximity, lexical match, and semantic similarity are deferred to subsequent phases.
-- **No Task-Intent Inference**: Memory embeddings represent factual session and context summaries (observed apps, paths, event counts). They do not infer high-level intent (e.g. "user was implementing oauth").
-- **Offline Baseline**: The default test and demonstration suite uses `MockEmbeddingProvider` for fast, reproducible verification without requiring model downloads. The production `SentenceTransformerEmbeddingProvider` is initialized dynamically when local weights are present.
+## Known Limitations in Phase 10
+- **No Arbitrary GUI Automation**: Phase 10 intentionally reconstructs window boundaries and positions applications to reopen previously observed resources. It does not attempt pixel-perfect internal UI state replay, form filling, or synthetic mouse/keyboard events.
+- **Trusted Applications Only**: Unregistered third-party binaries cannot be launched. Applications must be declared in the authoritative application registry with approved canonical installation locations.
+- **Windows OS Native APIs**: On non-Windows platforms, window layout operations fall back safely to `MockWindowManager` without error. Full multi-monitor display metrics and HWND manipulation are native to Windows 10/11.
+- **Zero Credentials**: Restoration intentionally excludes session cookies, login tokens, credentials, or SSH private keys.
 
-
----
-
-## Setup & Environment
-
-The project uses **Python 3.12** in the virtual environment at `C:\Projects\ORBIS\.venv`.
-
-### 1. Configuration Settings
-
-Key configuration options in `core/config.py`:
-- `SESSION_GAP_MINUTES` (default: `15.0`): Maximum minutes of inactivity between consecutive workspace events before demarcating a new session.
-- `OBSERVATION_ENABLED` (default: `true`): Toggles passive workspace observation.
-- `OBSERVATION_INTERVAL` (default: `3.0`): Polling interval in seconds for window tracking.
-- `ALLOWED_WORKSPACE_ROOT` (default: `.`): Path boundary for safe `FileTool` operations.
-- `EXCLUDED_PROCESSES`: Process names ignored by observation (e.g. password managers).
-- `EXCLUDED_WINDOW_TITLES`: Substrings in window titles that trigger privacy redaction.
-
----
-
-## Running the Demonstrations
-
-### Phase 1 Demo (Agent Shell Pipeline)
-```powershell
-.\.venv\Scripts\python.exe demo.py
-```
-
-### Phase 2 Demo (Observation, Deduplication, Privacy, Desktop & File Tools)
-```powershell
-.\.venv\Scripts\python.exe demo_phase2.py
-```
-
-### Phase 3 Demo (Session Segmentation + Context DNA Synthesis + Traceability)
-```powershell
-.\.venv\Scripts\python.exe demo_phase3.py
-```
-
----
-
-## Running the Automated Test Suite
-
-All 70 unit and integration tests run deterministically offline with zero external dependencies:
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest -v
-```
-
-### Test Coverage Breakdown:
-- `tests/test_continuity_db.py`: Migration 3 schema validation, session persistence, Context DNA storage/retrieval, chronological ordering, time-range queries, foreign key enforcement, and end-to-end evidence traceability queries.
-- `tests/test_dna.py`: Context DNA v1.0 category verification (Temporal, Application, Resource, Activity, Privacy, Quality), version tag enforcement, JSON roundtrip serialization/deserialization, application switch tracking, deterministic output.
-- `tests/test_sessionizer.py`: `Session` model validation, empty lists, single-event sessions, multiple events, large inactivity gaps, small gaps, app switching, returning to previous apps, identical timestamps, out-of-order sorting, tie-breaking, resource deduplication, `IncrementalSessionBuilder`, and malformed/empty event handling.
-- `tests/test_observation.py`: Event validation/serialization, observer abstraction, process switch, title change, duplicate event suppression, privacy exclusions.
-- `tests/test_desktop_tool.py`: `get_active_window`, `capture_snapshot`, independent verification, orchestrator integration.
-- `tests/test_file_tool.py`: `check_exists`, `inspect_path`, bounded `list_directory`, path traversal rejection, outside-root rejection, disk verification.
-- `tests/test_db_events.py`: Workspace event storage, chronological retrieval, time-range queries.
-- `tests/test_db.py`: SQLite WAL mode, migrations, audit logging, transaction rollback.
-- `tests/test_orchestrator.py`: Full single-step ReAct pipeline, status events.
-- `tests/test_tools.py`: BaseTool contracts, registry lookup, duplicate rejection, EchoTool execution.
-- `tests/test_llm.py`: MockLLMProvider deterministic generation and error simulation.
-
----
-
-## Known Limitations in Phase 3
-- **Factual Grouping Only**: Phase 3 groups workspace events strictly by observable signals (time, process name, resource path). It makes no semantic inference about user intent (e.g. it does not label a session as "debugging authentication").
-- **Rule-Based Baseline**: Segmentation relies on temporal gap thresholding and observable continuity rather than machine learning clustering.
-- **Resource Depth**: Resource metadata is derived exclusively from window titles and paths observed by Phase 2. Files are not opened or crawled.

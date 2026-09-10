@@ -42,6 +42,8 @@ class AgentOrchestrator:
         tool_registry: ToolRegistry,
         db_manager: Optional[DatabaseManager] = None,
         continuity_service: Optional[Any] = None,
+        intent_engine: Optional[Any] = None,
+        restoration_engine: Optional[Any] = None,
         planner: Optional[Any] = None,
         executor: Optional[Any] = None,
     ) -> None:
@@ -49,6 +51,8 @@ class AgentOrchestrator:
         self.tool_registry = tool_registry
         self.db_manager = db_manager
         self.continuity_service = continuity_service
+        self.intent_engine = intent_engine
+        self.restoration_engine = restoration_engine
         self.planner = planner
         self.executor = executor
         self._listeners: List[EventListener] = []
@@ -344,6 +348,26 @@ class AgentOrchestrator:
 
         return service.execute_query(query)
 
+    async def run_intent_continuity(self, query: str) -> Any:
+        """
+        Phase 9 Vertical-Slice Helper:
+        Directly executes an intent continuity query via IntentContinuityEngine.
+        Infers candidate goals, task states, unfinished work, and candidate next actions.
+        """
+        from core.ice.engine import IntentContinuityEngine
+
+        engine = self.intent_engine
+        if engine is None:
+            if self.db_manager is not None:
+                engine = IntentContinuityEngine(db=self.db_manager, llm_provider=self.llm_provider)
+            else:
+                from core.memory.db import DatabaseManager
+                temp_db = DatabaseManager(db_path=":memory:")
+                temp_db.initialize()
+                engine = IntentContinuityEngine(db=temp_db, llm_provider=self.llm_provider)
+
+        return await engine.infer_intent(query)
+
     async def run_task(
         self,
         user_request: str,
@@ -383,3 +407,32 @@ class AgentOrchestrator:
             context=ctx,
             approval_callback=approval_callback,
         )
+
+    async def run_restoration(
+        self,
+        query: str,
+        execute: bool = False,
+        approval_callback: Optional[Any] = None,
+    ) -> Any:
+        """
+        Phase 10 Workspace Restoration Helper:
+        Creates a preflight-validated declarative RestorationPlan from ICE evidence,
+        and optionally executes it within safety and approval boundaries.
+        """
+        from core.restoration.engine import RestorationEngine
+
+        engine = self.restoration_engine
+        if engine is None:
+            if self.db_manager is not None:
+                engine = RestorationEngine(db=self.db_manager)
+            else:
+                from core.memory.db import DatabaseManager
+                temp_db = DatabaseManager(db_path=":memory:")
+                temp_db.initialize()
+                engine = RestorationEngine(db=temp_db)
+
+        plan, ice_result, message = await engine.create_restoration_plan(query)
+        if not execute or not plan:
+            return {"plan": plan, "ice_result": ice_result, "message": message}
+
+        return await engine.execute_restoration_plan(plan, approval_callback=approval_callback)

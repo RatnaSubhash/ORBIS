@@ -43,11 +43,26 @@ class HierarchicalPlanner(BasePlanner):
         """
         prompt = request.user_prompt.strip()
 
-        # 1. Check for Continuity Request (Refinement 5)
+        # 1. Check for Intent Continuity Request (Phase 9 ICE)
+        if ContinuityService.is_intent_query(prompt) and (
+            tool_registry.get("intent_continuity") is not None
+            or tool_registry.get("intent_continuity_tool") is not None
+        ):
+            return self._plan_intent_continuity_task(request, tool_registry)
+
+        # 2. Check for Descriptive Continuity Request (Phase 5)
         if ContinuityService.is_continuity_query(prompt):
             return self._plan_continuity_task(request, tool_registry)
 
         lower_prompt = prompt.lower()
+
+        # Check for Workspace Restoration Request (Phase 10)
+        if (
+            ("restore" in lower_prompt or "reopen" in lower_prompt)
+            and ("workspace" in lower_prompt or "windows" in lower_prompt or "layout" in lower_prompt or "session" in lower_prompt or "apps" in lower_prompt)
+            and tool_registry.get("restoration_tool") is not None
+        ):
+            return self._plan_restoration_task(request, tool_registry)
 
         # 2. Check for Research + Document Creation Pattern (Phase 8 Multi-Step Pipeline)
         if (
@@ -205,6 +220,71 @@ class HierarchicalPlanner(BasePlanner):
     # --------------------------------------------------------------------------
     # Deterministic Planning Templates
     # --------------------------------------------------------------------------
+
+    def _plan_restoration_task(
+        self, request: AgentRequest, tool_registry: ToolRegistry
+    ) -> TaskPlan:
+        """Routes workspace restoration query to Phase 10 RestorationTool."""
+        tool = (
+            tool_registry.get("restoration_tool")
+            or tool_registry.get_or_raise("restoration_tool")
+        )
+        step_id = "step_workspace_restoration"
+
+        step = TaskStep(
+            step_id=step_id,
+            title="Generate and validate workspace restoration plan",
+            description="Queries Intent Continuity Engine evidence to reconstruct multi-application windows and layout.",
+            tool_name=tool.name,
+            parameters={"query": request.user_prompt, "execute": False},
+            dependencies=[],
+            state=TaskState.READY,
+            risk_level=tool.risk_level,
+            requires_approval=tool.risk_level == RiskLevel.HIGH,
+        )
+
+        plan = TaskPlan(
+            request_id=request.request_id,
+            user_prompt=request.user_prompt,
+            task_type=TaskType.CONTINUITY,
+            root_step_ids=[step_id],
+            steps={step_id: step},
+        )
+        PlanValidator.validate_plan_or_raise(plan, tool_registry=tool_registry)
+        return plan
+
+    def _plan_intent_continuity_task(
+        self, request: AgentRequest, tool_registry: ToolRegistry
+    ) -> TaskPlan:
+        """Routes intent query to Phase 9 IntentContinuityTool."""
+        tool = (
+            tool_registry.get("intent_continuity")
+            or tool_registry.get("intent_continuity_tool")
+            or tool_registry.get_or_raise("intent_continuity")
+        )
+        step_id = "step_intent_continuity"
+
+        step = TaskStep(
+            step_id=step_id,
+            title="Infer workspace intent, unfinished work, and next actions",
+            description="Queries Intent Continuity Engine (ICE) to infer candidate goals, unfinished work, and recommendations.",
+            tool_name=tool.name,
+            parameters={"query": request.user_prompt},
+            dependencies=[],
+            state=TaskState.READY,
+            risk_level=tool.risk_level,
+            requires_approval=tool.risk_level == RiskLevel.HIGH,
+        )
+
+        plan = TaskPlan(
+            request_id=request.request_id,
+            user_prompt=request.user_prompt,
+            task_type=TaskType.CONTINUITY,
+            root_step_ids=[step_id],
+            steps={step_id: step},
+        )
+        PlanValidator.validate_plan_or_raise(plan, tool_registry=tool_registry)
+        return plan
 
     def _plan_continuity_task(
         self, request: AgentRequest, tool_registry: ToolRegistry
