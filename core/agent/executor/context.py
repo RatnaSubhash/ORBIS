@@ -54,7 +54,19 @@ class TaskExecutionContext:
             if field_name is None:
                 params[param_key] = source_output
             elif isinstance(source_output, dict):
-                params[param_key] = source_output.get(field_name)
+                if field_name in source_output:
+                    params[param_key] = source_output[field_name]
+                elif "." in field_name:
+                    curr = source_output
+                    for part in field_name.split("."):
+                        if isinstance(curr, dict):
+                            curr = curr.get(part)
+                        else:
+                            curr = None
+                            break
+                    params[param_key] = curr
+                else:
+                    params[param_key] = source_output.get(field_name)
             elif hasattr(source_output, field_name):
                 params[param_key] = getattr(source_output, field_name)
             else:

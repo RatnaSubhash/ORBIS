@@ -16,6 +16,8 @@ from core.tools.search_provider import (
     MockSearchProvider,
     SearchResult,
 )
+from core.tools.content_tool import ContentGeneratorParameters, ContentGeneratorTool
+from core.tools.document_tool import DocumentActionParameters, DocumentTool
 from core.tools.terminal_tool import CommandPolicy, TerminalActionParameters, TerminalTool
 from core.tools.web_research_tool import (
     SafeHTMLTextExtractor,
@@ -43,4 +45,9 @@ __all__ = [
     "TerminalTool",
     "TerminalActionParameters",
     "CommandPolicy",
+    "ContentGeneratorTool",
+    "ContentGeneratorParameters",
+    "DocumentTool",
+    "DocumentActionParameters",
 ]
+

@@ -49,7 +49,26 @@ class HierarchicalPlanner(BasePlanner):
 
         lower_prompt = prompt.lower()
 
-        # 2. Check for Web Research Pattern (Phase 7)
+        # 2. Check for Research + Document Creation Pattern (Phase 8 Multi-Step Pipeline)
+        if (
+            ("search" in lower_prompt or "research" in lower_prompt or "find online" in lower_prompt)
+            and ("report" in lower_prompt or "document" in lower_prompt or "readme" in lower_prompt or "markdown" in lower_prompt or ".md" in lower_prompt or ".txt" in lower_prompt)
+            and tool_registry.get("web_research") is not None
+            and tool_registry.get("content_generator") is not None
+            and tool_registry.get("document") is not None
+        ):
+            return self._plan_research_and_document_task(request, tool_registry)
+
+        # 3. Check for Direct Document Creation Pattern (Phase 8 Document Generation)
+        if (
+            ("create" in lower_prompt or "write" in lower_prompt or "generate" in lower_prompt or "make" in lower_prompt or "turn" in lower_prompt)
+            and ("report" in lower_prompt or "document" in lower_prompt or "readme" in lower_prompt or "markdown" in lower_prompt or ".md" in lower_prompt or ".txt" in lower_prompt)
+            and tool_registry.get("content_generator") is not None
+            and tool_registry.get("document") is not None
+        ):
+            return self._plan_document_creation_task(request, tool_registry)
+
+        # 4. Check for Web Research Pattern (Phase 7)
         if (
             ("search" in lower_prompt or "web" in lower_prompt or "research" in lower_prompt or "lookup online" in lower_prompt or "find online" in lower_prompt)
             and tool_registry.get("web_research") is not None
@@ -534,6 +553,269 @@ class HierarchicalPlanner(BasePlanner):
             task_type=TaskType.SINGLE_STEP,
             root_step_ids=[step_id],
             steps={step_id: step},
+        )
+        PlanValidator.validate_plan_or_raise(plan, tool_registry=tool_registry)
+        return plan
+
+    def _extract_document_metadata(self, prompt: str) -> tuple[str, str, str, str]:
+        """
+        Extracts (topic, content_type, format, filename) from user prompt.
+        """
+        lower = prompt.lower()
+
+        # Determine format
+        if ".txt" in lower or "plain text" in lower or "text file" in lower or "text document" in lower:
+            doc_format = "text"
+            default_ext = ".txt"
+        else:
+            doc_format = "markdown"
+            default_ext = ".md"
+
+        # Determine content type
+        if "readme" in lower:
+            content_type = "readme"
+            default_name = "README.md"
+        elif "summary" in lower:
+            content_type = "summary"
+            default_name = f"summary{default_ext}"
+        elif "report" in lower:
+            content_type = "report"
+            default_name = f"report{default_ext}"
+        else:
+            content_type = "document"
+            default_name = f"document{default_ext}"
+
+        # Look for explicit filename in prompt
+        match = re.search(r"[\w\-./\\]+\.(?:md|txt)", prompt, re.IGNORECASE)
+        if match:
+            filename = match.group(0).strip("'\"")
+        else:
+            filename = default_name
+
+        # Extract clean topic
+        clean_topic = prompt
+        prefixes = sorted(
+            [
+                "research the web for and create a report about",
+                "research the web for and create a report on",
+                "research the web for",
+                "research and create a markdown report about",
+                "research and create a markdown report on",
+                "research and create a markdown report",
+                "research and create a report about",
+                "research and create a report on",
+                "research and create a report",
+                "research and create a document about",
+                "research and create a document on",
+                "research and create a document",
+                "research and write a report on",
+                "research and write a report about",
+                "research and write a report",
+                "research and write a document about",
+                "research and write a document",
+                "research about",
+                "research on",
+                "research",
+                "create a report about",
+                "create a report on",
+                "create a report for",
+                "create a report",
+                "create a summary from",
+                "create a summary of",
+                "create a summary about",
+                "create a summary",
+                "create a project report using",
+                "create a project report about",
+                "create a project report",
+                "create a readme for",
+                "create a readme",
+                "create a markdown file called",
+                "create a markdown file named",
+                "create a markdown document from",
+                "create a markdown document about",
+                "create a markdown file about",
+                "create a markdown file from",
+                "create a markdown document",
+                "create a markdown file",
+                "create a text file about",
+                "create a text document from",
+                "create a text document about",
+                "create a text document",
+                "create a text file",
+                "create a document from",
+                "create a document about",
+                "create a document",
+                "turn this information into a professional document",
+                "turn this information into a document",
+                "write a report about",
+                "write a report on",
+                "write a report",
+                "write a document about",
+                "write a document",
+                "write a readme for",
+                "write a readme",
+            ],
+            key=len,
+            reverse=True,
+        )
+
+        for prefix in prefixes:
+            m = re.match(r"(?i)^" + re.escape(prefix) + r"\b", prompt)
+            if m:
+                clean_topic = prompt[m.end():].strip()
+                break
+
+
+        # Remove trailing filename specifications or trailing directives
+        clean_topic = re.sub(r"(?i)\s+(?:and\s+save\s+to|called|named|to|in)\s+[\w\-./\\]+\.(?:md|txt)", "", clean_topic)
+        clean_topic = re.sub(r"(?i)\s+and\s+create\s+(?:a\s+)?(?:report|document|readme|markdown|file).*", "", clean_topic)
+        clean_topic = clean_topic.strip(" .?!'\"") or "ORBIS Topic"
+
+        return clean_topic, content_type, doc_format, filename
+
+    def _plan_research_and_document_task(
+        self, request: AgentRequest, tool_registry: ToolRegistry
+    ) -> TaskPlan:
+        """Constructs a multi-step DAG: web_research -> content_generator -> document."""
+        web_tool = tool_registry.get_or_raise("web_research")
+        content_tool = tool_registry.get_or_raise("content_generator")
+        doc_tool = tool_registry.get_or_raise("document")
+
+        topic, content_type, doc_format, filename = self._extract_document_metadata(request.user_prompt)
+
+        # Step 1: Web Research
+        step_search_id = "step_web_research"
+        step_search = TaskStep(
+            step_id=step_search_id,
+            title=f"Web research on '{topic}'",
+            description="Searches web and extracts relevant readable text.",
+            tool_name=web_tool.name,
+            parameters={"action": "research", "query": topic},
+            output_key="research_output",
+            dependencies=[],
+            state=TaskState.READY,
+            risk_level=web_tool.risk_level,
+        )
+
+        # Step 2: Content Generation
+        step_content_id = "step_generate_content"
+        step_content = TaskStep(
+            step_id=step_content_id,
+            title=f"Synthesize {content_type} on '{topic}'",
+            description=f"Synthesizes structured {doc_format} content incorporating research findings.",
+            tool_name=content_tool.name,
+            parameters={
+                "topic": topic,
+                "content_type": content_type,
+                "format": doc_format,
+            },
+            input_bindings={"context_data": f"{step_search_id}.extracted_text"},
+            output_key="content_output",
+            dependencies=[step_search_id],
+            state=TaskState.PENDING,
+            risk_level=content_tool.risk_level,
+        )
+
+        # Step 3: Document Persistence
+        step_doc_id = "step_create_document"
+        step_doc_params = {
+            "file_path": filename,
+            "content": "",
+            "format": doc_format,
+            "overwrite": "overwrite" in request.user_prompt.lower(),
+        }
+        effective_risk = getattr(doc_tool, "get_effective_risk", lambda p: doc_tool.risk_level)(step_doc_params)
+        step_doc = TaskStep(
+            step_id=step_doc_id,
+            title=f"Persist {doc_format} document to '{filename}'",
+            description="Writes document to disk within authorized workspace boundary.",
+            tool_name=doc_tool.name,
+            parameters=step_doc_params,
+            input_bindings={"content": f"{step_content_id}.content"},
+            output_key="document_output",
+            dependencies=[step_content_id],
+            state=TaskState.PENDING,
+            risk_level=effective_risk,
+            requires_approval=effective_risk == RiskLevel.HIGH,
+        )
+
+        steps = {
+            step_search_id: step_search,
+            step_content_id: step_content,
+            step_doc_id: step_doc,
+        }
+
+        plan = TaskPlan(
+            request_id=request.request_id,
+            user_prompt=request.user_prompt,
+            task_type=TaskType.SEQUENTIAL,
+            root_step_ids=[step_search_id],
+            steps=steps,
+        )
+        PlanValidator.validate_plan_or_raise(plan, tool_registry=tool_registry)
+        return plan
+
+    def _plan_document_creation_task(
+        self, request: AgentRequest, tool_registry: ToolRegistry
+    ) -> TaskPlan:
+        """Constructs a 2-step DAG: content_generator -> document."""
+        content_tool = tool_registry.get_or_raise("content_generator")
+        doc_tool = tool_registry.get_or_raise("document")
+
+        topic, content_type, doc_format, filename = self._extract_document_metadata(request.user_prompt)
+
+        # Step 1: Content Generation
+        step_content_id = "step_generate_content"
+        step_content = TaskStep(
+            step_id=step_content_id,
+            title=f"Synthesize {content_type} on '{topic}'",
+            description=f"Synthesizes structured {doc_format} content in memory.",
+            tool_name=content_tool.name,
+            parameters={
+                "topic": topic,
+                "content_type": content_type,
+                "format": doc_format,
+            },
+            output_key="content_output",
+            dependencies=[],
+            state=TaskState.READY,
+            risk_level=content_tool.risk_level,
+        )
+
+        # Step 2: Document Persistence
+        step_doc_id = "step_create_document"
+        step_doc_params = {
+            "file_path": filename,
+            "content": "",
+            "format": doc_format,
+            "overwrite": "overwrite" in request.user_prompt.lower(),
+        }
+        effective_risk = getattr(doc_tool, "get_effective_risk", lambda p: doc_tool.risk_level)(step_doc_params)
+        step_doc = TaskStep(
+            step_id=step_doc_id,
+            title=f"Persist {doc_format} document to '{filename}'",
+            description="Writes document to disk within authorized workspace boundary.",
+            tool_name=doc_tool.name,
+            parameters=step_doc_params,
+            input_bindings={"content": f"{step_content_id}.content"},
+            output_key="document_output",
+            dependencies=[step_content_id],
+            state=TaskState.PENDING,
+            risk_level=effective_risk,
+            requires_approval=effective_risk == RiskLevel.HIGH,
+        )
+
+        steps = {
+            step_content_id: step_content,
+            step_doc_id: step_doc,
+        }
+
+        plan = TaskPlan(
+            request_id=request.request_id,
+            user_prompt=request.user_prompt,
+            task_type=TaskType.SEQUENTIAL,
+            root_step_ids=[step_content_id],
+            steps=steps,
         )
         PlanValidator.validate_plan_or_raise(plan, tool_registry=tool_registry)
         return plan

@@ -144,6 +144,25 @@ class Settings(BaseSettings):
         description="Max output capture size in bytes for terminal commands (64KB)",
     )
 
+    # Phase 8: Content & Document Generation Settings
+    document_max_bytes: int = Field(
+        default=1048576,
+        ge=1024,
+        le=10485760,
+        description="Max allowed size in bytes for created documents (1MB)",
+    )
+    content_gen_max_chars: int = Field(
+        default=20000,
+        ge=100,
+        le=100000,
+        description="Max character length for generated content",
+    )
+    document_allowed_extensions: List[str] = Field(
+        default_factory=lambda: [".md", ".txt"],
+        description="Allowed file extensions for DocumentTool persistence",
+    )
+
+
     def is_excluded(
         self, process_name: Optional[str], window_title: Optional[str]
     ) -> bool:
