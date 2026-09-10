@@ -4,11 +4,12 @@ Provides hierarchical planning, DAG dependency validation, and replanning.
 """
 
 from core.agent.planner.base import BasePlanner
-from core.agent.planner.hierarchical import HierarchicalPlanner
+from core.agent.planner.hierarchical import HierarchicalPlanner, extract_json_object
 from core.agent.planner.validator import PlanValidator
 
 __all__ = [
     "BasePlanner",
     "HierarchicalPlanner",
     "PlanValidator",
+    "extract_json_object",
 ]

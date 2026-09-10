@@ -14,7 +14,12 @@ class BaseLLMProvider(ABC):
     """Abstract interface for LLM backends."""
 
     @abstractmethod
-    async def generate(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+    async def generate(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        format: Optional[str] = None,
+    ) -> str:
         """Generates a text completion for a given prompt."""
         pass
 

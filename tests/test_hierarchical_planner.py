@@ -233,3 +233,136 @@ async def test_malformed_llm_plan_rejection(test_registry: ToolRegistry):
     # Should fall back to safe default plan
     assert plan is not None
     assert "step_default" in plan.steps
+
+
+@pytest.mark.asyncio
+async def test_markdown_fenced_llm_plan_response(test_registry: ToolRegistry):
+    """Verifies that markdown code fenced JSON (```json ... ```) is parsed correctly."""
+    fenced_plan = """```json
+    {
+        "plan_id": "plan_fenced_1",
+        "request_id": "req_fenced",
+        "user_prompt": "Custom request",
+        "task_type": "sequential",
+        "root_step_ids": ["s1"],
+        "steps": {
+            "s1": {
+                "step_id": "s1",
+                "title": "Fenced Echo",
+                "tool_name": "echo",
+                "parameters": {"message": "hello from fenced JSON"},
+                "dependencies": [],
+                "state": "READY"
+            }
+        }
+    }
+    ```"""
+    mock_llm = MockLLMProvider(default_text_response=fenced_plan)
+    planner = HierarchicalPlanner(llm_provider=mock_llm)
+
+    request = AgentRequest(user_prompt="Custom unmatched request")
+    plan = await planner.plan(request, test_registry)
+
+    assert plan.plan_id == "plan_fenced_1"
+    assert "s1" in plan.steps
+    assert plan.steps["s1"].parameters["message"] == "hello from fenced JSON"
+
+
+@pytest.mark.asyncio
+async def test_preamble_and_conversational_llm_plan_response(test_registry: ToolRegistry):
+    """Verifies that conversational preamble and postscript surrounding JSON are handled cleanly."""
+    conversational_plan = """Here is your plan in JSON format:
+
+    ```json
+    {
+        "plan_id": "plan_preamble_1",
+        "request_id": "req_preamble",
+        "user_prompt": "Custom request",
+        "task_type": "sequential",
+        "root_step_ids": ["s1"],
+        "steps": {
+            "s1": {
+                "step_id": "s1",
+                "title": "Preamble Echo",
+                "tool_name": "echo",
+                "parameters": {"message": "hello despite preamble"},
+                "dependencies": [],
+                "state": "READY"
+            }
+        }
+    }
+    ```
+
+    I hope this plan helps you complete your task successfully!"""
+    mock_llm = MockLLMProvider(default_text_response=conversational_plan)
+    planner = HierarchicalPlanner(llm_provider=mock_llm)
+
+    request = AgentRequest(user_prompt="Custom unmatched request")
+    plan = await planner.plan(request, test_registry)
+
+    assert plan.plan_id == "plan_preamble_1"
+    assert "s1" in plan.steps
+    assert plan.steps["s1"].parameters["message"] == "hello despite preamble"
+
+
+@pytest.mark.asyncio
+async def test_valid_json_but_invalid_taskplan_fallback(test_registry: ToolRegistry):
+    """Verifies that valid JSON not conforming to TaskPlan schema falls back safely."""
+    invalid_schema_json = '{"name": "Not a task plan", "status": 200, "data": [1, 2, 3]}'
+    mock_llm = MockLLMProvider(default_text_response=invalid_schema_json)
+    planner = HierarchicalPlanner(llm_provider=mock_llm)
+
+    request = AgentRequest(user_prompt="Custom unmatched request")
+    plan = await planner.plan(request, test_registry)
+
+    # Must fall back safely to deterministic plan
+    assert plan is not None
+    assert "step_default" in plan.steps
+
+
+@pytest.mark.asyncio
+async def test_planvalidator_unregistered_tool_rejection(test_registry: ToolRegistry):
+    """Verifies that a plan specifying an unregistered tool is rejected by PlanValidator and falls back safely."""
+    unregistered_tool_plan = """{
+        "plan_id": "plan_bad_tool",
+        "request_id": "req_bad",
+        "user_prompt": "Run malicious tool",
+        "task_type": "sequential",
+        "root_step_ids": ["s1"],
+        "steps": {
+            "s1": {
+                "step_id": "s1",
+                "title": "Dangerous step",
+                "tool_name": "unregistered_dangerous_tool",
+                "parameters": {},
+                "dependencies": [],
+                "state": "READY"
+            }
+        }
+    }"""
+    mock_llm = MockLLMProvider(default_text_response=unregistered_tool_plan)
+    planner = HierarchicalPlanner(llm_provider=mock_llm)
+
+    request = AgentRequest(user_prompt="Custom unmatched request")
+    plan = await planner.plan(request, test_registry)
+
+    # Must fall back safely to deterministic plan
+    assert plan is not None
+    assert "step_default" in plan.steps
+
+
+def test_extract_json_object_helper():
+    """Unit test the extract_json_object defensive parsing helper directly."""
+    from core.agent.planner.hierarchical import extract_json_object
+
+    assert extract_json_object('{"a": 1}') == {"a": 1}
+    assert extract_json_object('```json\n{"a": 1}\n```') == {"a": 1}
+    assert extract_json_object('```\n{"a": 1}\n```') == {"a": 1}
+    assert extract_json_object('`{"a": 1}`') == {"a": 1}
+    assert extract_json_object('Preamble text ```json\n{"a": 1}\n``` commentary') == {"a": 1}
+    assert extract_json_object('Preamble {"a": 1} commentary') == {"a": 1}
+    assert extract_json_object('{"a": "hello } world", "b": 2}') == {"a": "hello } world", "b": 2}
+    assert extract_json_object("No json here") is None
+    assert extract_json_object("{malformed json:") is None
+    assert extract_json_object("[1, 2, 3]") is None
+    assert extract_json_object("") is None

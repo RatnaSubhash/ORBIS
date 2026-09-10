@@ -583,3 +583,149 @@ async def test_agent_orchestrator_voice_integration():
     assert res.success
     assert res.normalized_query == "echo voice orchestrator active"
     assert len(tts.spoken_history) > 0
+
+
+# ============================================================================
+# Dimension 21: Spoken Response Extraction & Precedence
+# ============================================================================
+def test_extract_spoken_response_string():
+    from core.voice.service import extract_spoken_response
+
+    class MockResult:
+        final_output = "I am ready to help you with your desktop tasks."
+        summary = "Multi-step task completed successfully (1/1 steps)."
+        status = TaskState.COMPLETED
+
+    res = extract_spoken_response(MockResult())
+    assert res == "I am ready to help you with your desktop tasks."
+
+
+def test_extract_spoken_response_dict_content():
+    from core.voice.service import extract_spoken_response
+
+    class MockResult:
+        final_output = {
+            "title": "AI Report",
+            "content": "# Artificial Intelligence\n\nAI is the simulation of human intelligence.",
+            "char_count": 500,
+            "format": "markdown",
+        }
+        summary = "Multi-step task completed successfully (1/1 steps)."
+        status = TaskState.COMPLETED
+
+    res = extract_spoken_response(MockResult())
+    assert "Artificial Intelligence" in res
+    assert "AI is the simulation of human intelligence." in res
+    assert "char_count" not in res
+    assert "Multi-step task" not in res
+
+
+def test_extract_spoken_response_dict_message():
+    from core.voice.service import extract_spoken_response
+
+    class MockResult:
+        final_output = {
+            "message": "Desktop application launched successfully.",
+            "title": "App Launch",
+            "pid": 1234,
+        }
+        summary = "Multi-step task completed successfully (1/1 steps)."
+        status = TaskState.COMPLETED
+
+    res = extract_spoken_response(MockResult())
+    assert res == "Desktop application launched successfully."
+
+
+def test_extract_spoken_response_dict_text():
+    from core.voice.service import extract_spoken_response
+
+    class MockResult:
+        final_output = {
+            "text": "Computer networks connect multiple devices to share data.",
+            "format": "plain",
+        }
+        summary = "Multi-step task completed successfully (1/1 steps)."
+        status = TaskState.COMPLETED
+
+    res = extract_spoken_response(MockResult())
+    assert res == "Computer networks connect multiple devices to share data."
+
+
+def test_extract_spoken_response_dict_summary():
+    from core.voice.service import extract_spoken_response
+
+    class MockResult:
+        final_output = {
+            "summary": "Restored 2 application windows to their saved positions.",
+            "window_count": 2,
+        }
+        summary = "Multi-step task completed successfully (1/1 steps)."
+        status = TaskState.COMPLETED
+
+    res = extract_spoken_response(MockResult())
+    assert res == "Restored 2 application windows to their saved positions."
+
+
+def test_extract_spoken_response_empty_final_output_fallback():
+    from core.voice.service import extract_spoken_response
+
+    class MockResult:
+        final_output = None
+        summary = "Multi-step task completed successfully (2/2 steps)."
+        status = TaskState.COMPLETED
+
+    res = extract_spoken_response(MockResult())
+    assert res == "Multi-step task completed successfully (2/2 steps)."
+
+
+def test_extract_spoken_response_metadata_only_dict_fallback():
+    from core.voice.service import extract_spoken_response
+
+    class MockResult:
+        final_output = {
+            "char_count": 100,
+            "line_count": 5,
+            "format": "markdown",
+        }
+        summary = "Multi-step task completed successfully (1/1 steps)."
+        status = TaskState.COMPLETED
+
+    res = extract_spoken_response(MockResult())
+    assert res == "Multi-step task completed successfully (1/1 steps)."
+
+
+def test_extract_spoken_response_failed_status():
+    from core.voice.service import extract_spoken_response
+
+    class MockResult:
+        final_output = "Some partial output that should not mask the error"
+        summary = "Multi-step task failed at step 'step2': Target file not found."
+        status = TaskState.FAILED
+
+    res = extract_spoken_response(MockResult())
+    assert "Multi-step task failed at step 'step2': Target file not found." in res
+
+
+@pytest.mark.asyncio
+async def test_voice_service_surfaces_useful_tool_output():
+    """Verifies that VoiceService speaks the actual tool output rather than the batch milestone message."""
+    llm = MockLLMProvider()
+    tools = ToolRegistry()
+    from core.tools.echo_tool import EchoTool
+    tools.register(EchoTool())
+    db = DatabaseManager(db_path=":memory:")
+    db.initialize()
+    stt = MockSTTProvider()
+    tts = MockTTSProvider()
+    orchestrator = AgentOrchestrator(llm_provider=llm, tool_registry=tools, db_manager=db)
+    service = VoiceService(orchestrator=orchestrator, stt_provider=stt, tts_provider=tts)
+
+    stt.queue_transcript("echo Hello I am speaking tool output")
+    audio = AudioBuffer(data=b"\x01\x00" * 16000, sample_rate=16000)
+
+    res = await service.process_spoken_request(audio)
+    assert res.success
+    assert len(tts.spoken_history) > 0
+    # Must speak the actual echoed content, not "Multi-step task completed successfully"
+    assert "Hello I am speaking tool output" in tts.spoken_history[-1]
+    assert "Multi-step task completed successfully" not in tts.spoken_history[-1]

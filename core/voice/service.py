@@ -29,12 +29,60 @@ from core.voice.tts.mock_tts import MockTTSProvider
 logger = logging.getLogger("orbis.voice.service")
 
 
+def extract_spoken_response(agent_exec_res: Any) -> str:
+    """
+    Extracts the most useful human-readable text from an AgentExecutionResult
+    or AgentResponse for speech synthesis, adhering to strict precedence:
+    1. If final_output is a non-empty string: use it.
+    2. If final_output is a dictionary: prefer keys 'content', 'message', 'text', 'summary'
+       in that exact order. Use the first non-empty human-readable value.
+       Do NOT speak internal metadata (title, format, char_count, line_count, etc.)
+       unless there is no better human-readable field.
+    3. If final_output contains no usable human-readable text: fall back to agent_exec_res.summary.
+    4. Always passes the selected text through VoiceNormalizer.format_output_for_speech().
+    """
+    candidate_text: Optional[str] = None
+
+    # If execution failed, prioritize failure explanation from summary
+    if hasattr(agent_exec_res, "status") and agent_exec_res.status == TaskState.FAILED:
+        candidate_text = getattr(agent_exec_res, "summary", "Task execution failed.")
+
+    final_output = getattr(agent_exec_res, "final_output", None)
+
+    # 1. Non-empty string final_output
+    if candidate_text is None and isinstance(final_output, str) and final_output.strip():
+        candidate_text = final_output.strip()
+
+    # 2. Dictionary final_output: prefer content, message, text, summary
+    elif candidate_text is None and isinstance(final_output, dict):
+        preferred_keys = ("content", "message", "text", "summary", "grounded_summary")
+        for key in preferred_keys:
+            val = final_output.get(key)
+            if isinstance(val, str) and val.strip():
+                candidate_text = val.strip()
+                break
+
+    # 3. Fallback to execution summary if no useful final_output text found
+    if not candidate_text:
+        summary = getattr(agent_exec_res, "summary", None)
+        if isinstance(summary, str) and summary.strip():
+            candidate_text = summary.strip()
+
+    # 4. Final fallback default
+    if not candidate_text:
+        candidate_text = "Task completed successfully."
+
+    return VoiceNormalizer.format_output_for_speech(candidate_text)
+
+
 class VoiceService:
     """
     Central coordinator for the ORBIS voice interface.
     Operates strictly as an interface adapter layer:
     User speech -> Audio Capture -> STT -> Normalizer -> AgentOrchestrator -> Formatter -> TTS.
     """
+
+    extract_spoken_response = staticmethod(extract_spoken_response)
 
     def __init__(
         self,
@@ -171,11 +219,8 @@ class VoiceService:
             approval_prompt = f"This action requires confirmation to proceed. Would you like me to proceed?"
             summary_to_speak = approval_prompt
             self.state = VoiceState.AWAITING_APPROVAL
-        elif hasattr(agent_exec_res, "summary") and agent_exec_res.summary:
-            summary_to_speak = VoiceNormalizer.format_output_for_speech(agent_exec_res.summary)
-            self.state = VoiceState.SPEAKING
         else:
-            summary_to_speak = "Task completed successfully."
+            summary_to_speak = extract_spoken_response(agent_exec_res)
             self.state = VoiceState.SPEAKING
 
         # 5. Vocalize Result via TTS

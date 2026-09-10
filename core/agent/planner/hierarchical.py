@@ -7,7 +7,7 @@ structured planning, DAG dependency management, and safe controlled replanning.
 import json
 import logging
 import re
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from core.agent.llm.base import BaseLLMProvider
@@ -25,6 +25,93 @@ from core.tools.registry import ToolRegistry
 from core.types import RiskLevel
 
 logger = logging.getLogger("orbis.agent.planner")
+
+
+def extract_json_object(text: str) -> Optional[Dict[str, Any]]:
+    """
+    Defensively extracts and parses a JSON object from text.
+    Handles:
+    - Pure JSON
+    - Markdown code fences (```json ... ``` or ``` ... ```)
+    - Conversational preamble or postscript surrounding a JSON object
+    Returns a dictionary if successfully parsed, or None if invalid.
+    """
+    if not text or not text.strip():
+        return None
+
+    cleaned = text.strip()
+
+    # Fast path 1: direct parse
+    try:
+        parsed = json.loads(cleaned)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    # Fast path 2: stripped backticks or markdown fences
+    candidate = cleaned
+    if candidate.startswith("```json"):
+        candidate = candidate[7:]
+    elif candidate.startswith("```"):
+        candidate = candidate[3:]
+    if candidate.endswith("```"):
+        candidate = candidate[:-3]
+    candidate = candidate.strip("` \t\r\n")
+
+    try:
+        parsed = json.loads(candidate)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    # Balanced bracket extraction for preamble / postscript text
+    depth = 0
+    in_string = False
+    escape = False
+    start_idx = -1
+
+    for i, ch in enumerate(text):
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+        else:
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                if depth == 0:
+                    start_idx = i
+                depth += 1
+            elif ch == "}":
+                if depth > 0:
+                    depth -= 1
+                    if depth == 0 and start_idx != -1:
+                        sub = text[start_idx : i + 1]
+                        try:
+                            parsed = json.loads(sub)
+                            if isinstance(parsed, dict):
+                                return parsed
+                        except Exception:
+                            pass
+
+    # Fallback: first '{' to last '}'
+    first_brace = text.find("{")
+    last_brace = text.rfind("}")
+    if first_brace != -1 and last_brace > first_brace:
+        sub = text[first_brace : last_brace + 1]
+        try:
+            parsed = json.loads(sub)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+
+    return None
 
 
 class HierarchicalPlanner(BasePlanner):
@@ -910,11 +997,59 @@ class HierarchicalPlanner(BasePlanner):
         if self.llm_provider is None:
             return None
 
+        tools_catalog = [
+            {
+                "name": t.name,
+                "description": t.description,
+                "parameters": t.get_schema_json(),
+            }
+            for t in tool_registry.list_tools()
+        ]
+
+        system_prompt = (
+            "You are the hierarchical task planning engine of ORBIS, an autonomous desktop agent.\n"
+            "Given a user prompt and available tools, create a structured execution plan.\n"
+            "You MUST respond ONLY with a valid JSON object strictly conforming to the TaskPlan schema.\n"
+            "Do NOT output markdown code blocks, conversational filler, or chain-of-thought.\n"
+            "TaskPlan JSON Schema:\n"
+            "{\n"
+            f'  "request_id": "{request.request_id}",\n'
+            f'  "user_prompt": "{request.user_prompt}",\n'
+            '  "task_type": "sequential",\n'
+            '  "root_step_ids": ["step1"],\n'
+            '  "steps": {\n'
+            '    "step1": {\n'
+            '      "step_id": "step1",\n'
+            '      "tool_name": "<registered_tool_name>",\n'
+            '      "parameters": {<key_value_pairs>},\n'
+            '      "dependencies": []\n'
+            '    }\n'
+            '  }\n'
+            "}"
+        )
+
+        user_prompt = (
+            f"Available Registered Tools:\n{json.dumps(tools_catalog, indent=2)}\n\n"
+            f"User Prompt: {request.user_prompt}\n\n"
+            "JSON Response:"
+        )
+
         try:
             raw_response = await self.llm_provider.generate(
-                prompt=f"Create a plan for: {request.user_prompt}",
-                system_prompt="Return a JSON task plan with steps and dependencies.",
+                prompt=user_prompt,
+                system_prompt=system_prompt,
+                format="json",
             )
+        except TypeError:
+            # Backward-compatibility fallback for providers that do not accept format keyword argument
+            try:
+                raw_response = await self.llm_provider.generate(
+                    prompt=user_prompt,
+                    system_prompt=system_prompt,
+                )
+            except Exception as e:
+                logger.warning("LLM generation exception: %s", e)
+                return None
         except Exception as e:
             logger.warning("LLM generation exception: %s", e)
             return None
@@ -923,7 +1058,30 @@ class HierarchicalPlanner(BasePlanner):
             return None
 
         try:
-            parsed = json.loads(raw_response)
+            parsed = extract_json_object(raw_response)
+            if not parsed:
+                logger.warning(
+                    "LLM response did not contain a valid JSON object: %s",
+                    raw_response[:100],
+                )
+                return None
+
+            # Defensively normalize casing and default fields for TaskPlan schema
+            if isinstance(parsed.get("task_type"), str):
+                parsed["task_type"] = parsed["task_type"].upper()
+            if not parsed.get("user_prompt"):
+                parsed["user_prompt"] = request.user_prompt
+            if not parsed.get("request_id"):
+                parsed["request_id"] = request.request_id
+
+            if isinstance(parsed.get("steps"), dict):
+                for sid, sdata in parsed["steps"].items():
+                    if isinstance(sdata, dict):
+                        if not sdata.get("title"):
+                            sdata["title"] = sdata.get("step_id", str(sid))
+                        if isinstance(sdata.get("state"), str):
+                            sdata["state"] = sdata["state"].upper()
+
             plan = TaskPlan.model_validate(parsed)
             PlanValidator.validate_plan_or_raise(plan, tool_registry=tool_registry)
             return plan

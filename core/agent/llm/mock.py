@@ -28,9 +28,14 @@ class MockLLMProvider(BaseLLMProvider):
         self.failure_error_message = failure_error_message
         self.call_history: List[Dict[str, str]] = []
 
-    async def generate(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+    async def generate(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        format: Optional[str] = None,
+    ) -> str:
         """Returns deterministic mock text or raises error if configured."""
-        self.call_history.append({"action": "generate", "prompt": prompt})
+        self.call_history.append({"action": "generate", "prompt": prompt, "format": format})
         if self.should_fail:
             raise RuntimeError(self.failure_error_message)
         return self.default_text_response

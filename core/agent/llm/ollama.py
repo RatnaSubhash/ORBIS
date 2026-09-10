@@ -31,7 +31,12 @@ class OllamaProvider(BaseLLMProvider):
         self.model = model or settings.ollama_model
         self.timeout = timeout or settings.ollama_timeout
 
-    async def generate(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+    async def generate(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        format: Optional[str] = None,
+    ) -> str:
         """Sends a completion request to Ollama /api/generate."""
         payload: Dict[str, Any] = {
             "model": self.model,
@@ -40,6 +45,8 @@ class OllamaProvider(BaseLLMProvider):
         }
         if system_prompt:
             payload["system"] = system_prompt
+        if format:
+            payload["format"] = format
 
         async with httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout) as client:
             response = await client.post("/api/generate", json=payload)
