@@ -134,12 +134,17 @@ class TaskExecutor:
                 self._cascade_block(plan, ready_step.step_id)
                 break
 
-            # 4. Safety Boundary & Authoritative Tool Approval Check (Fix 1)
+            # 4. Safety Boundary & Authoritative Tool Approval Check (Fix 1 & Phase 7 Dynamic Risk)
             tool = self.tool_registry.get_or_raise(ready_step.tool_name)
+            effective_tool_risk = getattr(tool, "get_effective_risk", lambda p: tool.risk_level)(ready_step.parameters)
+            if effective_tool_risk == RiskLevel.HIGH:
+                ready_step.risk_level = RiskLevel.HIGH
+
             is_approval_needed = (
                 ready_step.requires_approval
                 or ready_step.risk_level == RiskLevel.HIGH
                 or tool.risk_level == RiskLevel.HIGH
+                or effective_tool_risk == RiskLevel.HIGH
             )
             if is_approval_needed:
                 ready_step.state = TaskState.BLOCKED_PENDING_APPROVAL

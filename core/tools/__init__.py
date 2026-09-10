@@ -10,6 +10,19 @@ from core.tools.desktop_tool import DesktopTool
 from core.tools.echo_tool import EchoTool
 from core.tools.file_tool import FileTool
 from core.tools.registry import ToolRegistry
+from core.tools.search_provider import (
+    BaseSearchProvider,
+    ConfigurableSearchProvider,
+    MockSearchProvider,
+    SearchResult,
+)
+from core.tools.terminal_tool import CommandPolicy, TerminalActionParameters, TerminalTool
+from core.tools.web_research_tool import (
+    SafeHTMLTextExtractor,
+    WebResearchParameters,
+    WebResearchTool,
+    validate_and_sanitize_url,
+)
 
 __all__ = [
     "BaseTool",
@@ -19,4 +32,15 @@ __all__ = [
     "FileTool",
     "ContinuityTool",
     "ContinuityToolParameters",
+    "BaseSearchProvider",
+    "MockSearchProvider",
+    "ConfigurableSearchProvider",
+    "SearchResult",
+    "WebResearchTool",
+    "WebResearchParameters",
+    "SafeHTMLTextExtractor",
+    "validate_and_sanitize_url",
+    "TerminalTool",
+    "TerminalActionParameters",
+    "CommandPolicy",
 ]

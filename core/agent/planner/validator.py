@@ -68,9 +68,12 @@ class PlanValidator:
                     errors.append(
                         f"Step '{step_id}' references unregistered tool '{step.tool_name}'."
                     )
-                elif tool.risk_level == RiskLevel.HIGH and step.risk_level != RiskLevel.HIGH:
-                    # Enforce that plan cannot downgrade authoritative tool risk level
-                    step.risk_level = tool.risk_level
+                else:
+                    effective_risk = getattr(tool, "get_effective_risk", lambda p: tool.risk_level)(step.parameters)
+                    if (tool.risk_level == RiskLevel.HIGH or effective_risk == RiskLevel.HIGH) and step.risk_level != RiskLevel.HIGH:
+                        # Enforce that plan cannot downgrade authoritative tool risk level
+                        step.risk_level = RiskLevel.HIGH
+                        step.requires_approval = True
 
             # Input bindings validation
             for param_key, binding_ref in step.input_bindings.items():

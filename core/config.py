@@ -94,6 +94,56 @@ class Settings(BaseSettings):
         description="List of window title keywords to exclude/redact from observation",
     )
 
+    # Phase 7: Web Research & Controlled Terminal Settings
+    search_provider: str = Field(
+        default="mock",
+        description="Search provider type ('mock' or 'configurable')",
+    )
+    search_api_key: Optional[str] = Field(
+        default=None,
+        description="Optional API key for external search provider",
+    )
+    search_endpoint: Optional[str] = Field(
+        default=None,
+        description="Optional custom endpoint URL for external search provider",
+    )
+    web_max_results: int = Field(
+        default=5,
+        ge=1,
+        le=10,
+        description="Default max search results to return",
+    )
+    web_request_timeout: float = Field(
+        default=5.0,
+        ge=1.0,
+        le=30.0,
+        description="HTTP request timeout in seconds for web research",
+    )
+    web_max_page_size_bytes: int = Field(
+        default=524288,
+        ge=1024,
+        le=5242880,
+        description="Max response size in bytes for web fetches (512KB)",
+    )
+    web_max_extracted_chars: int = Field(
+        default=4000,
+        ge=100,
+        le=20000,
+        description="Max readable text chars extracted per webpage",
+    )
+    terminal_timeout_seconds: float = Field(
+        default=15.0,
+        ge=1.0,
+        le=60.0,
+        description="Process execution timeout in seconds for terminal commands",
+    )
+    terminal_max_output_bytes: int = Field(
+        default=65536,
+        ge=1024,
+        le=1048576,
+        description="Max output capture size in bytes for terminal commands (64KB)",
+    )
+
     def is_excluded(
         self, process_name: Optional[str], window_title: Optional[str]
     ) -> bool:

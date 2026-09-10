@@ -71,14 +71,41 @@ ORBIS is an extensible desktop AI agent inspired by the vision of a proactive co
 - **SQLite Extension (Migration 4)**:
   - Tables: `graph_nodes`, `graph_edges`, and `vector_records`.
 
+### Phase 5: First Vertical-Slice MVP (Verified)
+- Vertical continuity retrieval pipeline responding to "What was I working on?".
+- `ContinuityRetriever` combining recency retrieval, semantic vector memory, knowledge graph traversal, and SQLite fallbacks.
+- Deterministic heuristic confidence scoring and bidirectional evidence provenance.
+- `ContinuityService` and `AgentOrchestrator.run_continuity()` integration.
+
+### Phase 6: Multi-Step Agent Brain & Hierarchical Planner (Verified)
+- Structured, validated hierarchical task execution (`TaskPlan`, `TaskStep`, `AgentExecutionResult`).
+- `HierarchicalPlanner` providing deterministic offline DAG task decomposition by default, with optional LLM planning.
+- `PlanValidator` verifying DAG acyclicity (DFS cycle detection), dependencies, parent-child hierarchies, bounds, and tool registration.
+- `TaskExecutor` running topological steps with independent verification, retry limits, controlled replanning (`SKIPPED` superseded steps), and cascading failure blocking.
+- Authoritative tool risk enforcement and backend approval gates for `HIGH` risk operations.
+
+### Phase 7: Web Research & Controlled Terminal Automation (Verified)
+- **Controlled Web Research (`WebResearchTool`)**:
+  - `BaseSearchProvider` abstraction with `MockSearchProvider` (offline deterministic) and `ConfigurableSearchProvider` (extensible HTTP endpoint).
+  - Strict SSRF prevention: restricts to `http` and `https`, rejects `localhost`, `127.0.0.1`, loopback, link-local metadata (`169.254.169.254`), private IP subnets, and strips credentials.
+  - `SafeHTMLTextExtractor`: strips `<script>`, `<style>`, `<nav>`, `<footer>`, `<header>` and extracts bounded readable text.
+  - **Critical Untrusted Data Boundary**: All external web data is tagged with `is_untrusted_external_data=True` and treated strictly as DATA, not instructions, to defend against indirect prompt injection.
+- **Controlled Terminal Automation (`TerminalTool`)**:
+  - Structured process execution without shell wrappers (strictly `shell=False` via `asyncio.create_subprocess_exec`).
+  - Strict `CommandPolicy` allowlist categorizing commands into `LOW` (environment inspection), `MEDIUM` (build/test runs), `HIGH` (state-mutating/destructive operations), and `BLOCKED` (raw shells, unapproved utilities, metacharacters `;`, `&`, `|`, `>`, `<`).
+  - Workspace root containment and path traversal (`..`) rejection.
+  - Dynamic risk classification elevating HIGH-risk commands (`git clean`, `git commit`, `pip install`) to require explicit approval.
+  - Output secret redaction (`redact_secrets`) masking API keys, GitHub tokens, AWS keys, and credentials.
+- **Zero New Dependencies**: Implemented strictly with existing `httpx` and Python standard library.
+
 #### What is NOT Implemented Yet (Reserved for Future Phases):
-- ❌ Phase 5 Vertical-Slice MVP (Phase 5)
-- ❌ Unified Hybrid Retrieval & Ranking Algorithm (Later Phase)
-- ❌ Task Intent Inference & Next-Action Prediction (Phase 9 - ICE)
-- ❌ Workspace Restoration & Window Repositioning (Phase 5 / Phase 10)
-- ❌ Browser Automation & DOM Scraping (Phase 7)
+- ❌ Phase 8+ Desktop GUI (Electron / React)
 - ❌ Voice Interaction & TTS (Phase 11)
-- ❌ Multi-Step ReAct Autonomous Planning (Phase 6)
+- ❌ Browser UI Automation & DOM Scraping (Playwright / Selenium)
+- ❌ Workspace Restoration & Window Repositioning (Phase 10)
+- ❌ Task Intent Inference & Next-Action Prediction (Phase 9 - ICE)
+- ❌ Model Context Protocol (MCP) & Cryptographic Audit Chains
+- ❌ Unrestricted Shell or Background Autonomy
 
 ---
 
@@ -89,14 +116,16 @@ The project uses **Python 3.12** in the virtual environment at `C:\Projects\ORBI
 ### 1. Configuration Settings
 
 Key configuration options in `core/config.py`:
+- `SEARCH_PROVIDER` (default: `mock`): Search provider mode (`mock` or `configurable`).
+- `SEARCH_API_KEY`: Optional external search engine API key.
+- `WEB_MAX_RESULTS` (default: `5`): Maximum search results to retrieve.
+- `WEB_REQUEST_TIMEOUT` (default: `5.0`): HTTP request timeout in seconds.
+- `TERMINAL_TIMEOUT_SECONDS` (default: `15.0`): Execution timeout for terminal commands.
+- `TERMINAL_MAX_OUTPUT_BYTES` (default: `65536`): Maximum output capture size (64KB).
+- `ALLOWED_WORKSPACE_ROOT` (default: `.`): Path boundary for safe `FileTool` and `TerminalTool` operations.
 - `EMBEDDING_MODEL_NAME` (default: `all-MiniLM-L6-v2`): Local sentence-transformers model name.
 - `VECTOR_INDEX_PATH` (default: `orbis_vectors.faiss`): Persistent FAISS index file path on disk.
-- `SESSION_GAP_MINUTES` (default: `15.0`): Maximum minutes of inactivity between consecutive workspace events before demarcating a new session.
-- `OBSERVATION_ENABLED` (default: `true`): Toggles passive workspace observation.
-- `OBSERVATION_INTERVAL` (default: `3.0`): Polling interval in seconds for window tracking.
-- `ALLOWED_WORKSPACE_ROOT` (default: `.`): Path boundary for safe `FileTool` operations.
-- `EXCLUDED_PROCESSES`: Process names ignored by observation (e.g. password managers).
-- `EXCLUDED_WINDOW_TITLES`: Substrings in window titles that trigger privacy redaction.
+- `SESSION_GAP_MINUTES` (default: `15.0`): Maximum minutes of inactivity before session demarcations.
 
 ---
 
@@ -120,6 +149,21 @@ Key configuration options in `core/config.py`:
 ### Phase 4 Demo (Knowledge Graph + Semantic Vector Memory)
 ```powershell
 .\.venv\Scripts\python.exe demo_phase4.py
+```
+
+### Phase 5 Demo (First Vertical-Slice MVP: 'What was I working on?')
+```powershell
+.\.venv\Scripts\python.exe demo_phase5.py
+```
+
+### Phase 6 Demo (Multi-Step Agent Brain & Hierarchical Planner)
+```powershell
+.\.venv\Scripts\python.exe demo_phase6.py
+```
+
+### Phase 7 Demo (Web Research & Controlled Terminal Automation)
+```powershell
+.\.venv\Scripts\python.exe demo_phase7.py
 ```
 
 ---

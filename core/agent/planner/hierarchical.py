@@ -6,6 +6,7 @@ structured planning, DAG dependency management, and safe controlled replanning.
 
 import json
 import logging
+import re
 from typing import Dict, List, Optional
 from uuid import uuid4
 
@@ -46,19 +47,34 @@ class HierarchicalPlanner(BasePlanner):
         if ContinuityService.is_continuity_query(prompt):
             return self._plan_continuity_task(request, tool_registry)
 
-        # 2. Check for File Locate + Read + Summarize Pattern
         lower_prompt = prompt.lower()
+
+        # 2. Check for Web Research Pattern (Phase 7)
+        if (
+            ("search" in lower_prompt or "web" in lower_prompt or "research" in lower_prompt or "lookup online" in lower_prompt or "find online" in lower_prompt)
+            and tool_registry.get("web_research") is not None
+        ):
+            return self._plan_web_research_task(request, tool_registry)
+
+        # 3. Check for Terminal Command Pattern (Phase 7)
+        if (
+            ("git" in lower_prompt or "pytest" in lower_prompt or "terminal" in lower_prompt or "run test" in lower_prompt or "run the test" in lower_prompt)
+            and tool_registry.get("terminal") is not None
+        ):
+            return self._plan_terminal_task(request, tool_registry)
+
+        # 4. Check for File Locate + Read + Summarize Pattern
         if (
             ("readme" in lower_prompt or "file" in lower_prompt or "summary" in lower_prompt)
             and ("find" in lower_prompt or "locate" in lower_prompt or "read" in lower_prompt or "prepare" in lower_prompt)
         ):
             return self._plan_file_summary_hierarchy(request, tool_registry)
 
-        # 3. Check for Desktop Inspection Pattern
+        # 5. Check for Desktop Inspection Pattern
         if "desktop" in lower_prompt or "window" in lower_prompt or "process" in lower_prompt:
             return self._plan_desktop_inspection(request, tool_registry)
 
-        # 4. Check for Echo / Message Pattern
+        # 6. Check for Echo / Message Pattern
         if "echo" in lower_prompt or "say" in lower_prompt:
             return self._plan_echo_task(request, tool_registry)
 
@@ -337,6 +353,159 @@ class HierarchicalPlanner(BasePlanner):
             task_type=TaskType.SINGLE_STEP,
             root_step_ids=[step_id],
             steps={step_id: step},
+        )
+        PlanValidator.validate_plan_or_raise(plan, tool_registry=tool_registry)
+        return plan
+
+    def _plan_web_research_task(
+        self, request: AgentRequest, tool_registry: ToolRegistry
+    ) -> TaskPlan:
+        """Constructs a plan for web research."""
+        web_tool = tool_registry.get_or_raise("web_research")
+        echo_tool = tool_registry.get("echo") or tool_registry.get("echo_tool")
+
+        prompt = request.user_prompt
+        lower = prompt.lower()
+
+        # Extract search query
+        query = prompt
+        for prefix in (
+            "search the web for", "search for", "search web for",
+            "research on", "research", "lookup online for",
+            "find online information about", "find online",
+        ):
+            if lower.startswith(prefix):
+                query = prompt[len(prefix):].strip()
+                break
+
+        # Check if user asked to summarize
+        wants_summary = "summarize" in lower or "summary" in lower
+        if wants_summary and "and summarize" in query.lower():
+            query = re.split(r"(?i)\s+and\s+summarize", query)[0].strip()
+
+        clean_query = query.strip(" .?!'\"") or "ORBIS architecture"
+
+        step_search_id = "step_web_research"
+        step_search = TaskStep(
+            step_id=step_search_id,
+            title=f"Web research on '{clean_query}'",
+            description="Searches web and extracts relevant readable text.",
+            tool_name=web_tool.name,
+            parameters={"action": "research", "query": clean_query},
+            output_key="research_output",
+            dependencies=[],
+            state=TaskState.READY,
+            risk_level=web_tool.risk_level,
+        )
+
+        steps = {step_search_id: step_search}
+        root_ids = [step_search_id]
+
+        if wants_summary and echo_tool is not None:
+            step_sum_id = "step_summarize_research"
+            step_sum = TaskStep(
+                step_id=step_sum_id,
+                title=f"Summarize research for '{clean_query}'",
+                description="Summarizes extracted web research findings.",
+                tool_name=echo_tool.name,
+                parameters={"message": f"Summary of findings for {clean_query}:"},
+                dependencies=[step_search_id],
+                state=TaskState.PENDING,
+                risk_level=echo_tool.risk_level,
+            )
+            steps[step_sum_id] = step_sum
+            task_type = TaskType.SEQUENTIAL
+        else:
+            task_type = TaskType.SINGLE_STEP
+
+        plan = TaskPlan(
+            request_id=request.request_id,
+            user_prompt=request.user_prompt,
+            task_type=task_type,
+            root_step_ids=root_ids,
+            steps=steps,
+        )
+        PlanValidator.validate_plan_or_raise(plan, tool_registry=tool_registry)
+        return plan
+
+    def _plan_terminal_task(
+        self, request: AgentRequest, tool_registry: ToolRegistry
+    ) -> TaskPlan:
+        """Constructs a plan for controlled terminal execution."""
+        term_tool = tool_registry.get_or_raise("terminal")
+        echo_tool = tool_registry.get("echo") or tool_registry.get("echo_tool")
+
+        lower = request.user_prompt.lower()
+
+        if "status" in lower and "git" in lower:
+            cmd = "git"
+            args = ["status", "--short"]
+            title = "Check git repository status"
+        elif "log" in lower and "git" in lower:
+            cmd = "git"
+            args = ["log", "-n", "5", "--oneline"]
+            title = "Check recent git log entries"
+        elif "clean" in lower and "git" in lower:
+            cmd = "git"
+            args = ["clean", "-fd"]
+            title = "Clean untracked files (High Risk)"
+        elif "test" in lower or "pytest" in lower:
+            cmd = "pytest"
+            args = ["-v", "tests/test_tools.py"]
+            title = "Run automated test suite"
+        elif "python" in lower and "version" in lower:
+            cmd = "python"
+            args = ["--version"]
+            title = "Inspect Python runtime version"
+        else:
+            cmd = "git"
+            args = ["--version"]
+            title = "Inspect Git version"
+
+        effective_risk = getattr(term_tool, "get_effective_risk", lambda p: term_tool.risk_level)(
+            {"command": cmd, "args": args}
+        )
+
+        step_term_id = "step_terminal_cmd"
+        step_term = TaskStep(
+            step_id=step_term_id,
+            title=title,
+            description=f"Executes controlled terminal command '{cmd} {' '.join(args)}'.",
+            tool_name=term_tool.name,
+            parameters={"command": cmd, "args": args},
+            output_key="terminal_output",
+            dependencies=[],
+            state=TaskState.READY,
+            risk_level=effective_risk,
+            requires_approval=effective_risk == RiskLevel.HIGH,
+        )
+
+        steps = {step_term_id: step_term}
+        root_ids = [step_term_id]
+
+        if ("tell me" in lower or "report" in lower or "summarize" in lower) and echo_tool is not None:
+            step_report_id = "step_report_terminal"
+            step_report = TaskStep(
+                step_id=step_report_id,
+                title="Report terminal outcome",
+                description="Reports process execution output.",
+                tool_name=echo_tool.name,
+                parameters={"message": f"Execution result for '{cmd}':"},
+                dependencies=[step_term_id],
+                state=TaskState.PENDING,
+                risk_level=echo_tool.risk_level,
+            )
+            steps[step_report_id] = step_report
+            task_type = TaskType.SEQUENTIAL
+        else:
+            task_type = TaskType.SINGLE_STEP
+
+        plan = TaskPlan(
+            request_id=request.request_id,
+            user_prompt=request.user_prompt,
+            task_type=task_type,
+            root_step_ids=root_ids,
+            steps=steps,
         )
         PlanValidator.validate_plan_or_raise(plan, tool_registry=tool_registry)
         return plan
