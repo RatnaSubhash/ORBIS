@@ -15,7 +15,10 @@ from core.tools.search_provider import (
     ConfigurableSearchProvider,
     MockSearchProvider,
     SearchResult,
+    get_search_provider,
 )
+from core.tools.gemini_search import GeminiSearchProvider
+from core.tools.tavily_search import TavilySearchProvider
 from core.tools.content_tool import ContentGeneratorParameters, ContentGeneratorTool
 from core.tools.document_tool import DocumentActionParameters, DocumentTool
 from core.tools.intent_tool import IntentContinuityTool, IntentToolParameters
@@ -41,6 +44,9 @@ __all__ = [
     "BaseSearchProvider",
     "MockSearchProvider",
     "ConfigurableSearchProvider",
+    "GeminiSearchProvider",
+    "TavilySearchProvider",
+    "get_search_provider",
     "SearchResult",
     "WebResearchTool",
     "WebResearchParameters",

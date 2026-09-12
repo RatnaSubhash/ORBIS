@@ -56,6 +56,10 @@ class TaskStep(BaseModel):
     state: TaskState = TaskState.PENDING
     risk_level: RiskLevel = RiskLevel.LOW
     requires_approval: bool = False
+    approval_prompt: Optional[str] = Field(
+        default=None,
+        description="Specific question presented to the user when step halts for approval.",
+    )
     max_attempts: int = Field(default=2, ge=1, le=5)
     attempts: int = 0
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -120,3 +124,20 @@ class AgentExecutionResult(BaseModel):
     step_results: Dict[str, StepResult] = Field(default_factory=dict)
     verification_reports: Dict[str, StepVerification] = Field(default_factory=dict)
     final_output: Any = None
+
+
+class PendingApproval(BaseModel):
+    """
+    Retains a blocked task plan and metadata awaiting human confirmation.
+    Scoped strictly to the pending action with a bounded time-to-live.
+    """
+    task_id: str
+    plan: TaskPlan
+    blocked_step_id: str
+    action_description: str
+    tool_name: str
+    target_resource: Optional[str] = None
+    completed_steps: List[str] = Field(default_factory=list)
+    step_results: Dict[str, StepResult] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    expires_at: datetime

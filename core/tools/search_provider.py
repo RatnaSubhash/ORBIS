@@ -188,3 +188,30 @@ class ConfigurableSearchProvider(BaseSearchProvider):
         except Exception as e:
             logger.warning("External search API request failed: %s. Falling back to mock results.", e)
             return await self.mock_provider.search(query, max_results=max_results)
+
+
+def get_search_provider(provider_type: Optional[str] = None) -> BaseSearchProvider:
+    """
+    Factory function resolving the configured BaseSearchProvider.
+    Explicitly checks configuration without silent fallbacks between providers.
+    """
+    settings = get_settings()
+    resolved_type = (provider_type or settings.search_provider).lower().strip()
+
+    if resolved_type == "mock":
+        return MockSearchProvider()
+    elif resolved_type == "configurable":
+        return ConfigurableSearchProvider()
+    elif resolved_type == "gemini":
+        from core.tools.gemini_search import GeminiSearchProvider
+
+        return GeminiSearchProvider()
+    elif resolved_type == "tavily":
+        from core.tools.tavily_search import TavilySearchProvider
+
+        return TavilySearchProvider()
+    else:
+        raise ValueError(
+            f"Unsupported search provider: '{resolved_type}'. "
+            "Supported providers are 'mock', 'configurable', 'gemini', 'tavily'."
+        )

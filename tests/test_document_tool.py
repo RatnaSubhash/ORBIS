@@ -163,9 +163,9 @@ async def test_overwrite_policy_enforcement(tmp_path: Path) -> None:
     res1 = await tool.execute(p1, ctx)
     assert res1.success is True
 
-    # 2. Second write without overwrite -> fails
+    # 2. Second write to existing file -> proactively evaluates to RiskLevel.HIGH; execute fails if overwrite=False
     p2 = DocumentActionParameters(file_path=doc_path, content="Overwritten text", overwrite=False)
-    assert tool.get_effective_risk(p2) == RiskLevel.LOW
+    assert tool.get_effective_risk(p2) == RiskLevel.HIGH
     res2 = await tool.execute(p2, ctx)
     assert res2.success is False
     assert "already exists" in res2.error

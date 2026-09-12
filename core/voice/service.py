@@ -216,7 +216,10 @@ class VoiceService:
         approval_prompt = None
         if hasattr(agent_exec_res, "status") and agent_exec_res.status == TaskState.BLOCKED_PENDING_APPROVAL:
             requires_approval = True
-            approval_prompt = f"This action requires confirmation to proceed. Would you like me to proceed?"
+            approval_prompt = (
+                getattr(agent_exec_res, "summary", None)
+                or "This action requires confirmation to proceed. Would you like me to proceed?"
+            )
             summary_to_speak = approval_prompt
             self.state = VoiceState.AWAITING_APPROVAL
         else:

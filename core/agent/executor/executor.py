@@ -92,10 +92,81 @@ class TaskExecutor:
         # Validate plan structure before execution
         PlanValidator.validate_plan_or_raise(plan, tool_registry=self.tool_registry)
 
-        completed_steps: List[str] = []
+        return await self._execute_loop(
+            plan=plan,
+            exec_ctx=exec_ctx,
+            task_context=task_context,
+            completed_steps=[],
+            step_results={},
+            approval_callback=approval_callback,
+        )
+
+    async def resume(
+        self,
+        plan: TaskPlan,
+        approved_step_id: str,
+        context: Optional[ExecutionContext] = None,
+        approval_callback: Optional[ApprovalCallback] = None,
+        initial_step_results: Optional[Dict[str, StepResult]] = None,
+    ) -> AgentExecutionResult:
+        """
+        Resumes execution of a previously blocked TaskPlan from an approved step.
+        Does not re-execute steps that are already COMPLETED.
+        """
+        exec_ctx = context or ExecutionContext(task_id=plan.request_id)
+        task_context = TaskExecutionContext()
+
+        # Seed task_context with outputs of already completed steps
+        completed_step_ids = [
+            sid for sid, s in plan.steps.items() if s.state == TaskState.COMPLETED
+        ]
+        if initial_step_results:
+            for sid, sres in initial_step_results.items():
+                if sid in plan.steps and plan.steps[sid].state == TaskState.COMPLETED:
+                    task_context.store_output(sid, sres.output, plan.steps[sid].output_key)
+
+        # Unblock the approved step
+        if approved_step_id in plan.steps:
+            target_step = plan.steps[approved_step_id]
+            target_step.state = TaskState.READY
+            target_step.requires_approval = False
+
+        # Reset any cascading BLOCKED downstream steps back to PENDING
+        for step in plan.steps.values():
+            if step.step_id != approved_step_id and step.state == TaskState.BLOCKED:
+                step.state = TaskState.PENDING
+
+        # Validate plan structure before continuing execution
+        PlanValidator.validate_plan_or_raise(plan, tool_registry=self.tool_registry)
+
+        # Scoped approval callback strictly authorizing only approved_step_id
+        def scoped_approval(step: TaskStep) -> bool:
+            if approval_callback is not None:
+                res = approval_callback(step)
+                return bool(res)
+            return step.step_id == approved_step_id
+
+        return await self._execute_loop(
+            plan=plan,
+            exec_ctx=exec_ctx,
+            task_context=task_context,
+            completed_steps=completed_step_ids,
+            step_results=dict(initial_step_results or {}),
+            approval_callback=scoped_approval,
+        )
+
+    async def _execute_loop(
+        self,
+        plan: TaskPlan,
+        exec_ctx: ExecutionContext,
+        task_context: TaskExecutionContext,
+        completed_steps: List[str],
+        step_results: Dict[str, StepResult],
+        approval_callback: Optional[ApprovalCallback] = None,
+    ) -> AgentExecutionResult:
+        """Core topological execution and verification loop."""
         failed_step: Optional[str] = None
         failure_error: Optional[str] = None
-        step_results: Dict[str, StepResult] = {}
         verification_reports: Dict[str, StepVerification] = {}
 
         total_executed_steps = 0
@@ -154,13 +225,14 @@ class TaskExecutor:
                     ready_step.state = TaskState.READY
                 else:
                     failed_step = ready_step.step_id
-                    failure_error = f"Step '{ready_step.step_id}' requires explicit approval before execution."
+                    approval_msg = ready_step.approval_prompt or f"Execution halted: step '{ready_step.step_id}' ({ready_step.tool_name}) requires approval."
+                    failure_error = ready_step.approval_prompt or f"Step '{ready_step.step_id}' requires explicit approval before execution."
                     self._cascade_block(plan, ready_step.step_id)
                     return AgentExecutionResult(
                         task_id=exec_ctx.task_id,
                         request=plan.user_prompt,
                         status=TaskState.BLOCKED_PENDING_APPROVAL,
-                        summary=f"Execution halted: step '{ready_step.step_id}' ({ready_step.tool_name}) requires approval.",
+                        summary=approval_msg,
                         plan=plan,
                         completed_steps=completed_steps,
                         failed_step=failed_step,

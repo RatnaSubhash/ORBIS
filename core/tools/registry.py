@@ -115,6 +115,11 @@ def create_default_tool_registry(
             mock_runner=mock_terminal_runner,
         )
     )
+    if search_provider is None:
+        from core.tools.search_provider import get_search_provider
+
+        search_provider = get_search_provider()
+
     registry.register(WebResearchTool(search_provider=search_provider, mock_fetcher=mock_web_fetcher))
     registry.register(ContentGeneratorTool(generator=content_generator))
     registry.register(DocumentTool())

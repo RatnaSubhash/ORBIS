@@ -18,7 +18,7 @@ ORBIS_ROOT = r"C:\Projects\ORBIS"
 if ORBIS_ROOT not in sys.path:
     sys.path.insert(0, ORBIS_ROOT)
 
-from core.agent.llm.ollama import OllamaProvider
+from core.agent.llm.factory import get_llm_provider
 from core.agent.orchestrator import AgentOrchestrator
 from core.continuity.service import ContinuityService
 from core.ice.engine import IntentContinuityEngine
@@ -48,7 +48,7 @@ async def interactive_voice_session():
     # 1. Initialize Database & Context Engine
     db = DatabaseManager(db_path="orbis.db")
     db.initialize()
-    real_llm = OllamaProvider()
+    real_llm = get_llm_provider()
     continuity_svc = ContinuityService(db=db)
     intent_eng = IntentContinuityEngine(db=db, llm_provider=real_llm)
 
@@ -71,6 +71,32 @@ async def interactive_voice_session():
     stt_provider._load_model()
     print("      Faster-Whisper model ready in memory.")
 
+    class InterleavedSTTProvider:
+        def __init__(self, inner: FasterWhisperSTTProvider):
+            self._inner = inner
+            self._queued_transcript = None
+
+        def queue_text(self, text: str):
+            self._queued_transcript = text
+
+        async def transcribe(self, audio: AudioBuffer):
+            if self._queued_transcript is not None:
+                text = self._queued_transcript
+                self._queued_transcript = None
+                from core.voice.models import TranscriptionResult
+                return TranscriptionResult(
+                    text=text,
+                    raw_text=text,
+                    confidence=1.0,
+                    audio_duration_seconds=audio.duration_seconds,
+                )
+            return await self._inner.transcribe(audio)
+
+        def is_available(self) -> bool:
+            return self._inner.is_available()
+
+    interleaved_stt = InterleavedSTTProvider(stt_provider)
+
     print("[3/3] Initializing local Windows SAPI5 TTS (Microsoft David Desktop)...")
     tts_provider = WindowsSapiTTSProvider(voice_name="Microsoft David Desktop")
     if not tts_provider.is_available():
@@ -91,7 +117,7 @@ async def interactive_voice_session():
     voice_service = VoiceService(
         orchestrator=orchestrator,
         capture=capture,
-        stt_provider=stt_provider,
+        stt_provider=interleaved_stt,
         tts_provider=tts_provider,
     )
     orchestrator.voice_service = voice_service
@@ -99,7 +125,7 @@ async def interactive_voice_session():
     print("\n" + "-" * 75)
     print("READY FOR VOICE INTERACTION (PUSH-TO-TALK MODE)")
     print("Controls:")
-    print("  1. Press [Enter] to START recording.")
+    print("  1. Press [Enter] to START recording, or type spoken query.")
     print("  2. Speak clearly into your microphone.")
     print("  3. Press [Enter] to STOP recording.")
     print("  4. Listen to ORBIS speak back through your speakers.")
@@ -113,30 +139,36 @@ async def interactive_voice_session():
 
     while True:
         turn_count += 1
-        prompt = input(f"\n[Turn {turn_count}] Press [Enter] to speak (or 'q' to exit): ").strip().lower()
-        if prompt in ("q", "quit", "exit"):
+        prompt = input(f"\n[Turn {turn_count}] Press [Enter] to speak (or type query, 'q' to exit): ").strip()
+        if prompt.lower() in ("q", "quit", "exit"):
             print("\nExiting interactive voice interface.")
             await tts_provider.speak("Goodbye.")
             break
 
-        # Start Push-to-Talk Recording
-        print("\n>>> [RECORDING ACTIVE] Speak now...")
-        voice_service.start_listening()
+        if prompt:
+            # Typed spoken input mode (passes through full normalizer, orchestrator, TTS pipeline)
+            print(f">>> [SPOKEN INPUT] \"{prompt}\"")
+            interleaved_stt.queue_text(prompt)
+            audio_buf = AudioBuffer(data=b"\x00" * 32000, sample_rate=16000, channels=1)
+        else:
+            # Start Push-to-Talk Recording
+            print("\n>>> [RECORDING ACTIVE] Speak now...")
+            voice_service.start_listening()
 
-        # Wait for user to finish speaking
-        input(">>> Press [Enter] when finished speaking...")
+            # Wait for user to finish speaking
+            input(">>> Press [Enter] when finished speaking...")
 
-        # Stop Push-to-Talk Recording
-        audio_buf: AudioBuffer = voice_service.stop_listening()
-        duration = audio_buf.duration_seconds
-        print(f">>> [RECORDING STOPPED] Captured {duration:.2f}s of audio ({len(audio_buf.data)} bytes in memory).")
+            # Stop Push-to-Talk Recording
+            audio_buf: AudioBuffer = voice_service.stop_listening()
+            duration = audio_buf.duration_seconds
+            print(f">>> [RECORDING STOPPED] Captured {duration:.2f}s of audio ({len(audio_buf.data)} bytes in memory).")
 
-        if audio_buf.is_empty or duration < 0.2:
-            print("[Warning] No audible speech captured. Please hold PTT and speak clearly.")
-            continue
+            if audio_buf.is_empty or duration < 0.2:
+                print("[Warning] No audible speech captured. Please hold PTT and speak clearly.")
+                continue
 
         # Process through full ORBIS Voice Pipeline
-        print(">>> [TRANSCRIBING] Running local Faster-Whisper transcription...")
+        print(">>> [PROCESSING] Running voice pipeline...")
         result = await voice_service.process_spoken_request(audio_buf, speak_response=True)
 
         print("\n" + "=" * 50)
@@ -145,25 +177,10 @@ async def interactive_voice_session():
         print(f"  Agent Response:  \"{result.agent_response_summary}\"")
         print("=" * 50)
 
-        # Handle Two-Step Approval Gate if action requires confirmation
+        # State guidance when an approval is pending for the next voice turn
         if result.requires_approval:
-            print(f"\n[APPROVAL REQUIRED] {result.approval_prompt}")
-            conf_prompt = input("Press [Enter] to speak confirmation (or type 'cancel'): ").strip().lower()
-            if conf_prompt in ("c", "cancel"):
-                print("Action cancelled.")
-                continue
-
-            print(">>> [RECORDING CONFIRMATION] Speak 'Yes, proceed' or 'No, cancel'...")
-            voice_service.start_listening()
-            input(">>> Press [Enter] when finished speaking...")
-            conf_audio = voice_service.stop_listening()
-
-            is_approved, explanation = await voice_service.process_spoken_approval(conf_audio)
-            print(f"  Confirmation Result: Approved={is_approved} ({explanation})")
-            if is_approved:
-                await tts_provider.speak("Confirmation received. Proceeding with action.")
-            else:
-                await tts_provider.speak("Action cancelled.")
+            print(f"\n[APPROVAL PENDING] {result.approval_prompt}")
+            print(">>> Press [Enter] on the next turn to speak your confirmation (e.g. 'Yes, overwrite it' or 'No, cancel').")
 
 
 if __name__ == "__main__":

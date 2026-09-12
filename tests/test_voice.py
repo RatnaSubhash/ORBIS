@@ -768,7 +768,11 @@ async def test_voice_agent_registry_contains_web_research():
     # 2. Voice Pipeline Integration
     stt = MockSTTProvider()
     tts = MockTTSProvider()
-    orchestrator = AgentOrchestrator(llm_provider=MockLLMProvider(), tool_registry=tools, db_manager=db)
+    orchestrator = AgentOrchestrator(
+        llm_provider=MockLLMProvider(default_text_response="Python 3.12 is the latest stable release."),
+        tool_registry=tools,
+        db_manager=db,
+    )
     service = VoiceService(orchestrator=orchestrator, stt_provider=stt, tts_provider=tts)
 
     stt.queue_transcript("What is the latest Python version?")

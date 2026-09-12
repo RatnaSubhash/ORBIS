@@ -35,7 +35,7 @@ class MockLLMProvider(BaseLLMProvider):
         format: Optional[str] = None,
     ) -> str:
         """Returns deterministic mock text or raises error if configured."""
-        self.call_history.append({"action": "generate", "prompt": prompt, "format": format})
+        self.call_history.append({"action": "generate", "prompt": prompt, "system_prompt": system_prompt, "format": format})
         if self.should_fail:
             raise RuntimeError(self.failure_error_message)
         return self.default_text_response

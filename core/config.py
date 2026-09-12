@@ -31,6 +31,12 @@ class Settings(BaseSettings):
         description="Path to local SQLite database file or ':memory:'",
     )
 
+    # LLM Provider Selection & Settings
+    llm_provider: str = Field(
+        default="ollama",
+        description="LLM provider backend ('ollama', 'gemini', 'mock')",
+    )
+
     # Local LLM (Ollama) Settings
     ollama_url: str = Field(
         default="http://localhost:11434",
@@ -43,6 +49,16 @@ class Settings(BaseSettings):
     ollama_timeout: float = Field(
         default=60.0,
         description="Timeout in seconds for Ollama requests",
+    )
+
+    # Cloud LLM (Gemini) Settings
+    gemini_api_key: Optional[str] = Field(
+        default=None,
+        description="API key for Google Gemini provider",
+    )
+    gemini_model: str = Field(
+        default="gemini-2.5-flash",
+        description="Model name to use with Gemini",
     )
 
     # Phase 2: Workspace Observation Settings
@@ -97,7 +113,7 @@ class Settings(BaseSettings):
     # Phase 7: Web Research & Controlled Terminal Settings
     search_provider: str = Field(
         default="mock",
-        description="Search provider type ('mock' or 'configurable')",
+        description="Search provider type ('mock', 'configurable', 'gemini', 'tavily')",
     )
     search_api_key: Optional[str] = Field(
         default=None,
@@ -106,6 +122,14 @@ class Settings(BaseSettings):
     search_endpoint: Optional[str] = Field(
         default=None,
         description="Optional custom endpoint URL for external search provider",
+    )
+    tavily_api_key: Optional[str] = Field(
+        default=None,
+        description="API key for Tavily search provider",
+    )
+    tavily_endpoint: str = Field(
+        default="https://api.tavily.com/search",
+        description="Endpoint URL for Tavily search API",
     )
     web_max_results: int = Field(
         default=5,

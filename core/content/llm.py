@@ -46,6 +46,16 @@ class LLMContentGenerator(BaseContentGenerator):
             "4. Do NOT output meta-commentary, conversational greetings, or chain-of-thought. Start directly with the document heading or content."
         )
 
+        if context_data and ("SEARCH EVIDENCE" in context_data or content_type == "summary"):
+            system_prompt += (
+                "\n5. RESEARCH GROUNDING INSTRUCTIONS:\n"
+                "- Answer ONLY from the supplied research evidence.\n"
+                "- Directly answer the user's requested entity and property (e.g. specific tier pricing, current office holder).\n"
+                "- For temporal or current queries, prioritize evidence explicitly stating current or latest values.\n"
+                "- If the evidence is insufficient to verify the requested fact, state that it could not be verified rather than guessing.\n"
+                "- Do NOT begin with conversational filler (e.g. 'Let's explore...')."
+            )
+
         user_prompt_parts = [
             f"Topic: {clean_topic}",
             f"Document Type: {content_type}",

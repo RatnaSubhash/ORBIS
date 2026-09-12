@@ -149,8 +149,8 @@ class DocumentTool(BaseTool):
         try:
             resolved = self.resolve_safe_path(raw_path)
             if resolved.exists():
-                # Overwrite is high risk and requires explicit approval
-                return RiskLevel.HIGH if overwrite else RiskLevel.LOW
+                # Writing to an existing file requires explicit overwrite approval (HIGH risk)
+                return RiskLevel.HIGH
             return RiskLevel.LOW
         except Exception:
             return RiskLevel.HIGH

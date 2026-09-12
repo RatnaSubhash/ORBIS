@@ -629,3 +629,70 @@ async def test_web_research_tool_grounded_summary_and_no_results():
     )
     spoken_empty = extract_spoken_response(fake_empty_exec)
     assert "No web research results found" in spoken_empty
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_malformed_voice_transcript_triggers_clarification(full_test_registry: ToolRegistry):
+    """
+    Regression Test (Criterion 6):
+    Verifies that malformed or ambiguous voice transcripts such as:
+    'Who is who is the current chief minister of the melodic?'
+    trigger deterministic clarification rather than guessing or web research.
+    """
+    from core.agent.planner.hierarchical import is_ambiguous_or_malformed_query
+
+    planner = HierarchicalPlanner()
+
+    ambiguous_prompts = [
+        "Who is who is the current chief minister of the melodic?",
+        "who is who is the current chief minister of the melodic",
+        "What is what is the price of the",
+        "Who is the chief minister of the melodic",
+        "Who is the chief minister of ",
+    ]
+
+    for p in ambiguous_prompts:
+        is_ambig, clarif = is_ambiguous_or_malformed_query(p)
+        assert is_ambig is True, f"Expected '{p}' to be recognized as ambiguous."
+        assert clarif is not None
+
+        req = AgentRequest(user_prompt=p)
+        plan = await planner.plan(req, full_test_registry)
+
+        # Must route to step_clarification with echo tool, NEVER to web_research
+        assert "step_clarification" in plan.steps, f"Expected clarification step for '{p}'"
+        assert "step_web_research" not in plan.steps, f"Must not perform web research for ambiguous query '{p}'"
+        clarif_step = plan.steps["step_clarification"]
+        assert clarif_step.tool_name in ("echo", "echo_tool")
+        assert any(word in clarif_step.parameters.get("message", "").lower() for word in ("clarify", "incomplete", "unclear", "repeat"))
+
+
+@pytest.mark.asyncio
+async def test_normal_natural_language_queries_accepted(full_test_registry: ToolRegistry):
+    """
+    Regression Test (Criterion 7):
+    Verifies that standard natural-language questions (including those with 'current',
+    prices, and office-holder roles) remain fully accepted without false ambiguity rejection.
+    """
+    from core.agent.planner.hierarchical import is_ambiguous_or_malformed_query
+
+    planner = HierarchicalPlanner()
+
+    valid_prompts = [
+        "What is the current price of Apple's 2TB iCloud plus storage plan?",
+        "Who is the current Chief Minister of Tamil Nadu?",
+        "What is the latest Python version?",
+        "Who is the CEO of Microsoft?",
+        "What is the current version of Docker?",
+    ]
+
+    for p in valid_prompts:
+        is_ambig, clarif = is_ambiguous_or_malformed_query(p)
+        assert is_ambig is False, f"Expected '{p}' to NOT be flagged as ambiguous."
+        assert clarif is None
+
+        req = AgentRequest(user_prompt=p)
+        plan = await planner.plan(req, full_test_registry)
+
+        assert "step_web_research" in plan.steps, f"Expected web research step for '{p}'"
+        assert "step_clarification" not in plan.steps, f"Valid query '{p}' must not trigger clarification"

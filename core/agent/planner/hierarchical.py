@@ -7,7 +7,7 @@ structured planning, DAG dependency management, and safe controlled replanning.
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from core.agent.llm.base import BaseLLMProvider
@@ -114,6 +114,58 @@ def extract_json_object(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def is_ambiguous_or_malformed_query(prompt: str) -> Tuple[bool, Optional[str]]:
+    """
+    Deterministically detects malformed or ambiguous voice transcripts
+    (e.g., repeated question prefixes, stuttered phrases, broken sentence fragments,
+    or nonsensical adjective entity targets in office-holder queries)
+    that should trigger a clarification response rather than guessing or web research.
+    Returns (is_ambiguous, clarification_message).
+    """
+    if not prompt or not prompt.strip():
+        return True, "I didn't hear a query. Could you please repeat your request?"
+
+    cleaned = prompt.strip()
+    lower = cleaned.lower()
+
+    # 1. Repeated question prefixes / stuttering at query start
+    # e.g. "who is who is", "what is what is", "tell me tell me", "search for search for", "where is where is"
+    repeated_prefix_pattern = re.compile(
+        r"^(who\s+is\s+who\s+is|what\s+is\s+what\s+is|where\s+is\s+where\s+is|"
+        r"tell\s+me\s+tell\s+me|search\s+for\s+search\s+for|how\s+much\s+is\s+how\s+much\s+is)\b",
+        re.IGNORECASE,
+    )
+    if repeated_prefix_pattern.search(lower):
+        return True, "I heard a repeated phrase in your request. Could you please clarify what you would like to know?"
+
+    # 2. Incomplete queries ending abruptly with a trailing preposition or article
+    stripped_punct = lower.rstrip(".?! \t\r\n")
+    trailing_dangling_pattern = re.compile(
+        r"\b(?:of|for|about|in|at|to|by|from|between|with|the|a|an)\s*$",
+        re.IGNORECASE,
+    )
+    has_question_starter = bool(
+        re.search(r"^(who|what|where|when|which|how|tell\s+me|search|find|current|latest)\b", stripped_punct)
+    )
+    if has_question_starter and trailing_dangling_pattern.search(stripped_punct):
+        return True, "Your question seems incomplete. Could you please specify what entity or topic you are asking about?"
+
+    # 3. Malformed office targets with musical/adjective terms (e.g., "chief minister of the melodic")
+    office_adjective_pattern = re.compile(
+        r"\b(?:chief\s+minister|prime\s+minister|president|governor|mayor)\s+of\s+(?:the\s+)?(melodic|rhythmic|harmonic|musical|lyrical|symphonic|loud|quiet|tasty|fragrant|blue|green|yellow)\b",
+        re.IGNORECASE,
+    )
+    if office_adjective_pattern.search(lower):
+        return True, "I could not identify the state, region, or organization in your question. Could you please clarify who you are asking about?"
+
+    # 4. Bare tautological queries e.g. "who is who", "what is what"
+    bare_tautology = re.compile(r"^(?:who\s+is\s+who|what\s+is\s+what)\s*[.?!]?$", re.IGNORECASE)
+    if bare_tautology.search(lower):
+        return True, "Could you please specify the exact person or topic you would like to know about?"
+
+    return False, None
+
+
 class HierarchicalPlanner(BasePlanner):
     """
     Constructs and refines hierarchical task execution plans.
@@ -150,6 +202,11 @@ class HierarchicalPlanner(BasePlanner):
             and tool_registry.get("restoration_tool") is not None
         ):
             return self._plan_restoration_task(request, tool_registry)
+
+        # Ambiguity Check: Do not guess or search when transcript contains obviously malformed or ambiguous entity
+        is_ambiguous, clarification_msg = is_ambiguous_or_malformed_query(prompt)
+        if is_ambiguous and clarification_msg:
+            return self._plan_clarification_task(request, tool_registry, clarification_msg)
 
         # 2. Check for Research + Document Creation Pattern (Phase 8 Multi-Step Pipeline)
         if (
@@ -544,6 +601,34 @@ class HierarchicalPlanner(BasePlanner):
         PlanValidator.validate_plan_or_raise(plan, tool_registry=tool_registry)
         return plan
 
+    def _plan_clarification_task(
+        self, request: AgentRequest, tool_registry: ToolRegistry, message: str
+    ) -> TaskPlan:
+        """Constructs an immediate clarification plan for ambiguous or malformed queries."""
+        echo_tool = tool_registry.get("echo") or tool_registry.get("echo_tool") or tool_registry.list_tools()[0]
+        step_id = "step_clarification"
+
+        step = TaskStep(
+            step_id=step_id,
+            title="Request Clarification",
+            description="Requests user clarification for ambiguous or malformed input.",
+            tool_name=echo_tool.name,
+            parameters={"message": message} if echo_tool.name in ("echo", "echo_tool") else {},
+            dependencies=[],
+            state=TaskState.READY,
+            risk_level=echo_tool.risk_level,
+        )
+
+        plan = TaskPlan(
+            request_id=request.request_id,
+            user_prompt=request.user_prompt,
+            task_type=TaskType.SINGLE_STEP,
+            root_step_ids=[step_id],
+            steps={step_id: step},
+        )
+        PlanValidator.validate_plan_or_raise(plan, tool_registry=tool_registry)
+        return plan
+
     def _plan_echo_task(self, request: AgentRequest, tool_registry: ToolRegistry) -> TaskPlan:
         """Constructs a plan for echo / message printing."""
         tool = tool_registry.get("echo") or tool_registry.get("echo_tool") or tool_registry.get_or_raise("echo")
@@ -615,8 +700,15 @@ class HierarchicalPlanner(BasePlanner):
 
         # Check if user asked to summarize
         wants_summary = "summarize" in lower or "summary" in lower
-        if wants_summary and "and summarize" in query.lower():
-            query = re.split(r"(?i)\s+and\s+summarize", query)[0].strip()
+        if wants_summary:
+            # Strip trailing summary/report directives from search query e.g. "and create a short summary", "and summarize"
+            query = re.sub(
+                r"(?i)\s+and\s+(?:create|write|give|provide|make)?\s*(?:a\s+)?(?:short\s+)?(?:summary|overview|report|briefing).*",
+                "",
+                query,
+            )
+            query = re.sub(r"(?i)\s+and\s+summarize.*", "", query)
+            query = re.sub(r"(?i)\s+in\s+short.*", "", query)
 
         clean_query = query.strip(" .?!'\"") or "ORBIS architecture"
 
@@ -821,6 +913,12 @@ class HierarchicalPlanner(BasePlanner):
                 "research and create a report about",
                 "research and create a report on",
                 "research and create a report",
+                "research and create a short summary about",
+                "research and create a short summary on",
+                "research and create a short summary",
+                "research and create a summary about",
+                "research and create a summary on",
+                "research and create a summary",
                 "research and create a document about",
                 "research and create a document on",
                 "research and create a document",
@@ -840,6 +938,10 @@ class HierarchicalPlanner(BasePlanner):
                 "create a summary of",
                 "create a summary about",
                 "create a summary",
+                "create a short summary of",
+                "create a short summary about",
+                "create a short summary for",
+                "create a short summary",
                 "create a project report using",
                 "create a project report about",
                 "create a project report",
@@ -940,11 +1042,24 @@ class HierarchicalPlanner(BasePlanner):
             "format": doc_format,
             "overwrite": "overwrite" in request.user_prompt.lower(),
         }
+        target_exists = False
+        try:
+            target_exists = doc_tool.resolve_safe_path(filename).exists()
+        except Exception:
+            pass
+
         effective_risk = getattr(doc_tool, "get_effective_risk", lambda p: doc_tool.risk_level)(step_doc_params)
+        requires_approval = False
+        approval_prompt = None
+        if target_exists or effective_risk == RiskLevel.HIGH:
+            effective_risk = RiskLevel.HIGH
+            requires_approval = True
+            approval_prompt = f"{filename} already exists in your workspace. Do you want me to overwrite it?"
+
         step_doc = TaskStep(
             step_id=step_doc_id,
             title=f"Persist {doc_format} document to '{filename}'",
-            description="Writes document to disk within authorized workspace boundary.",
+            description=f"Overwrites existing file '{filename}' after human confirmation." if target_exists else "Writes document to disk within authorized workspace boundary.",
             tool_name=doc_tool.name,
             parameters=step_doc_params,
             input_bindings={"content": f"{step_content_id}.content"},
@@ -952,7 +1067,8 @@ class HierarchicalPlanner(BasePlanner):
             dependencies=[step_content_id],
             state=TaskState.PENDING,
             risk_level=effective_risk,
-            requires_approval=effective_risk == RiskLevel.HIGH,
+            requires_approval=requires_approval,
+            approval_prompt=approval_prompt,
         )
 
         steps = {
@@ -1006,11 +1122,24 @@ class HierarchicalPlanner(BasePlanner):
             "format": doc_format,
             "overwrite": "overwrite" in request.user_prompt.lower(),
         }
+        target_exists = False
+        try:
+            target_exists = doc_tool.resolve_safe_path(filename).exists()
+        except Exception:
+            pass
+
         effective_risk = getattr(doc_tool, "get_effective_risk", lambda p: doc_tool.risk_level)(step_doc_params)
+        requires_approval = False
+        approval_prompt = None
+        if target_exists or effective_risk == RiskLevel.HIGH:
+            effective_risk = RiskLevel.HIGH
+            requires_approval = True
+            approval_prompt = f"{filename} already exists in your workspace. Do you want me to overwrite it?"
+
         step_doc = TaskStep(
             step_id=step_doc_id,
             title=f"Persist {doc_format} document to '{filename}'",
-            description="Writes document to disk within authorized workspace boundary.",
+            description=f"Overwrites existing file '{filename}' after human confirmation." if target_exists else "Writes document to disk within authorized workspace boundary.",
             tool_name=doc_tool.name,
             parameters=step_doc_params,
             input_bindings={"content": f"{step_content_id}.content"},
@@ -1018,7 +1147,8 @@ class HierarchicalPlanner(BasePlanner):
             dependencies=[step_content_id],
             state=TaskState.PENDING,
             risk_level=effective_risk,
-            requires_approval=effective_risk == RiskLevel.HIGH,
+            requires_approval=requires_approval,
+            approval_prompt=approval_prompt,
         )
 
         steps = {
