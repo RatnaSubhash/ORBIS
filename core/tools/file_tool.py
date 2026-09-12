@@ -7,12 +7,31 @@ within a strictly enforced allowed workspace root.
 from datetime import datetime, timezone
 import os
 from pathlib import Path
+import re
 from typing import Any, Dict, List, Literal, Optional, Type
 from pydantic import BaseModel, Field
 
 from core.config import get_settings
 from core.tools.base import BaseTool
+from core.tools.secret_redaction import redact_secrets
 from core.types import ExecutionContext, RiskLevel, ToolResult, VerificationReport
+
+# Windows reserved device names
+RESERVED_DEVICE_NAMES = {
+    "con", "prn", "aux", "nul",
+    "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+    "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+}
+
+# Sensitive / protected file patterns that must never be read or exposed
+PROTECTED_PATTERNS = [
+    re.compile(r"^\.env(\..+)?$", re.IGNORECASE),
+    re.compile(r"^\.git($|[\\/])", re.IGNORECASE),
+    re.compile(r"id_rsa|id_ed25519|\.pem$|\.key$|private.*key", re.IGNORECASE),
+    re.compile(r"credentials", re.IGNORECASE),
+    re.compile(r"system32|windows|sam$", re.IGNORECASE),
+]
+
 
 
 class FileActionParameters(BaseModel):
@@ -60,12 +79,59 @@ class FileTool(BaseTool):
         root_str = allowed_workspace_root or settings.allowed_workspace_root
         self.allowed_root = Path(root_str).resolve()
 
+    def is_protected_path(self, target: Path) -> bool:
+        """
+        Determines whether target path matches sensitive or protected file patterns.
+        Protects .env, .git, SSH/private keys, credentials, *.pem, *.key, and Windows sensitive locations.
+        """
+        # 1. Device names
+        if target.stem.lower() in RESERVED_DEVICE_NAMES or target.name.lower() in RESERVED_DEVICE_NAMES:
+            return True
+        for part in target.parts:
+            part_lower = part.lower()
+            if part_lower in RESERVED_DEVICE_NAMES:
+                return True
+            if part_lower == ".git" or part_lower.startswith(".git"):
+                return True
+            if part_lower == ".env" or part_lower.startswith(".env"):
+                return True
+            if re.search(r"id_rsa|id_ed25519|\.pem$|\.key$|private.*key|credentials", part_lower):
+                return True
+
+        # 2. Check name against PROTECTED_PATTERNS
+        name_lower = target.name.lower()
+        for pat in PROTECTED_PATTERNS:
+            if pat.search(name_lower):
+                return True
+
+        # 3. Check relative path to allowed root
+        try:
+            rel = target.relative_to(self.allowed_root)
+            rel_str = str(rel).lower()
+            for pat in PROTECTED_PATTERNS:
+                if pat.search(rel_str):
+                    return True
+        except ValueError:
+            pass
+
+        # 4. Windows system locations
+        target_str = str(target).lower()
+        if re.search(r"[\\/](windows|system32|system32[\\/]config[\\/]sam)[\\/]?", target_str):
+            return True
+
+        return False
+
     def resolve_safe_path(self, raw_path: str) -> Path:
         """
         Resolves the provided path against the allowed workspace root and enforces
         that it does not escape the boundary via traversal (../), junctions, or symlinks.
         Raises ValueError if the path escapes the permitted root.
         """
+        if ".." in raw_path:
+            raise ValueError(f"Path safety violation: Traversal ('..') is not permitted in '{raw_path}'.")
+        if raw_path.startswith("//") or raw_path.startswith(r"\\"):
+            raise ValueError(f"UNC network paths are prohibited: '{raw_path}'.")
+
         candidate = Path(raw_path)
         if not candidate.is_absolute():
             resolved = (self.allowed_root / candidate).resolve()
@@ -169,6 +235,12 @@ class FileTool(BaseTool):
                 }
 
             elif params.action == "read_file":
+                if self.is_protected_path(target):
+                    return ToolResult(
+                        success=False,
+                        error="Access denied: Target path is a protected or sensitive file.",
+                        metadata={"action": params.action, "path": params.path},
+                    )
                 if not target.exists():
                     return ToolResult(
                         success=False,
@@ -183,19 +255,21 @@ class FileTool(BaseTool):
                     )
                 try:
                     with open(target, "r", encoding="utf-8", errors="replace") as f:
-                        content = f.read(params.max_bytes)
+                        raw_content = f.read(params.max_bytes)
                 except Exception as read_err:
                     return ToolResult(
                         success=False,
-                        error=f"Failed to read file: {read_err}",
+                        error="Failed to read file.",
                         metadata={"action": params.action, "path": str(target)},
                     )
+
+                clean_content = redact_secrets(raw_content)
 
                 output = {
                     "path": str(target),
                     "name": target.name,
-                    "content": content,
-                    "bytes_read": len(content.encode("utf-8")),
+                    "content": clean_content,
+                    "bytes_read": len(clean_content.encode("utf-8")),
                 }
 
             else:

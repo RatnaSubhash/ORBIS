@@ -6,7 +6,7 @@ step bounds, tool availability, and parameter binding references.
 
 from typing import Dict, List, Optional, Set
 
-from core.agent.models import TaskPlan, TaskStep
+from core.agent.models import TaskPlan, TaskStep, TaskType
 from core.tools.registry import ToolRegistry
 from core.types import RiskLevel
 
@@ -28,6 +28,8 @@ class PlanValidator:
         errors: List[str] = []
 
         if not plan.steps:
+            if getattr(plan, "no_tool_required", False) or (plan.task_type == TaskType.SINGLE_STEP and not plan.root_step_ids):
+                return errors
             errors.append("Task plan contains no steps.")
             return errors
 

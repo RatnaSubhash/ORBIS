@@ -128,16 +128,54 @@ class RestorationEngine:
         if not session:
             return None
 
-        # Build ResourceTargets from session resources
+        # Build ResourceTargets from session resources using evidence hierarchy
         resource_targets: List[ResourceTarget] = []
         for r in session.resources:
             r_clean = r.strip()
             if r_clean.startswith("http://") or r_clean.startswith("https://"):
                 t_type = ResourceTargetType.WEB_URL
-            elif Path(r_clean).is_dir() if Path(r_clean).exists() else ("\\" not in r_clean and "/" not in r_clean and "." not in r_clean):
-                t_type = ResourceTargetType.DIRECTORY
             else:
-                t_type = ResourceTargetType.WORKSPACE_FILE
+                # 1. Physical filesystem existence check
+                p = Path(r_clean)
+                check_p = p if p.is_absolute() else (self.validator.allowed_root / p).resolve()
+                if check_p.exists():
+                    if check_p.is_dir():
+                        t_type = ResourceTargetType.DIRECTORY
+                    elif check_p.is_file():
+                        t_type = ResourceTargetType.WORKSPACE_FILE
+                    else:
+                        t_type = ResourceTargetType.UNKNOWN
+                else:
+                    # 2. Trustworthy stored resource metadata/type
+                    meta_type = None
+                    if session.session_metadata:
+                        res_types = session.session_metadata.get("resource_types", {})
+                        if r_clean in res_types:
+                            meta_type = res_types[r_clean]
+                        elif str(p) in res_types:
+                            meta_type = res_types[str(p)]
+                        else:
+                            res_meta = session.session_metadata.get("resource_metadata", {})
+                            if r_clean in res_meta and isinstance(res_meta[r_clean], dict):
+                                meta_type = res_meta[r_clean].get("target_type") or res_meta[r_clean].get("type")
+
+                    if meta_type:
+                        m_str = str(meta_type).upper()
+                        if "DIR" in m_str:
+                            t_type = ResourceTargetType.DIRECTORY
+                        elif "FILE" in m_str:
+                            t_type = ResourceTargetType.WORKSPACE_FILE
+                        elif "URL" in m_str:
+                            t_type = ResourceTargetType.WEB_URL
+                        else:
+                            t_type = ResourceTargetType.UNKNOWN
+                    elif r_clean.endswith("/") or r_clean.endswith("\\"):
+                        t_type = ResourceTargetType.DIRECTORY
+                    elif p.suffix:
+                        t_type = ResourceTargetType.WORKSPACE_FILE
+                    else:
+                        # 3. Unresolved / ambiguous extensionless nonexistent resource
+                        t_type = ResourceTargetType.UNKNOWN
 
             resource_targets.append(
                 ResourceTarget(

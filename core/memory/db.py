@@ -7,10 +7,12 @@ Extended for Phase 2 Workspace Event Persistence.
 
 from datetime import datetime
 import json
-import sqlite3
-from contextlib import contextmanager
 from pathlib import Path
+import sqlite3
+import threading
 from typing import Any, Dict, Generator, List, Optional
+from uuid import uuid4
+from contextlib import contextmanager
 
 from core.types import ContextDNA, Session, WorkspaceEvent, WorkspaceEventType
 
@@ -143,6 +145,7 @@ class DatabaseManager:
     def __init__(self, db_path: str = "orbis.db") -> None:
         self.db_path = db_path
         self._is_memory = db_path == ":memory:"
+        self._lock = threading.RLock()
         if not self._is_memory:
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         # Persistent connection for in-memory DB so it doesn't vanish between context calls
@@ -152,7 +155,7 @@ class DatabaseManager:
 
     def _create_connection(self) -> sqlite3.Connection:
         """Creates and configures a new SQLite connection."""
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON;")
         if not self._is_memory:
@@ -165,15 +168,26 @@ class DatabaseManager:
         """
         Yields a managed SQLite connection.
         Automatically commits transactions upon normal exit, or rolls back on exception.
+        In-memory connections use serialized savepoints for robust concurrency and rollback isolation.
         """
         if self._is_memory and self._memory_conn is not None:
-            conn = self._memory_conn
-            try:
-                yield conn
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
+            with self._lock:
+                conn = self._memory_conn
+                sp_name = f"sp_{uuid4().hex}"
+                conn.execute(f"SAVEPOINT {sp_name};")
+                try:
+                    yield conn
+                    try:
+                        conn.execute(f"RELEASE SAVEPOINT {sp_name};")
+                    except sqlite3.OperationalError:
+                        pass
+                except Exception:
+                    try:
+                        conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name};")
+                        conn.execute(f"RELEASE SAVEPOINT {sp_name};")
+                    except sqlite3.OperationalError:
+                        conn.rollback()
+                    raise
         else:
             conn = self._create_connection()
             try:

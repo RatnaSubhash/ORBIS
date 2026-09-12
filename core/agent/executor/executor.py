@@ -9,6 +9,7 @@ import logging
 import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 
+from pydantic import ValidationError
 from core.agent.executor.context import TaskExecutionContext
 from core.agent.models import (
     AgentExecutionResult,
@@ -91,6 +92,18 @@ class TaskExecutor:
 
         # Validate plan structure before execution
         PlanValidator.validate_plan_or_raise(plan, tool_registry=self.tool_registry)
+
+        if not plan.steps:
+            return AgentExecutionResult(
+                task_id=exec_ctx.task_id,
+                request=plan.user_prompt,
+                status=TaskState.COMPLETED,
+                summary="Request analyzed; no tool required.",
+                plan=plan,
+                completed_steps=[],
+                step_results={},
+                verification_reports={},
+            )
 
         return await self._execute_loop(
             plan=plan,
@@ -251,6 +264,23 @@ class TaskExecutor:
 
             try:
                 validated_params = tool.validate_parameters(resolved_params)
+            except ValidationError as val_ex:
+                t_end = time.perf_counter()
+                step_res = StepResult(
+                    step_id=ready_step.step_id,
+                    tool_name=ready_step.tool_name,
+                    success=False,
+                    error=f"Parameter validation failed: {str(val_ex)}",
+                    execution_time_ms=(t_end - t_start) * 1000.0,
+                )
+                step_results[ready_step.step_id] = step_res
+                ready_step.state = TaskState.FAILED
+                failed_step = ready_step.step_id
+                failure_error = step_res.error
+                self._cascade_block(plan, ready_step.step_id)
+                break
+
+            try:
                 tool_result = await tool.execute(validated_params, exec_ctx)
                 t_end = time.perf_counter()
 

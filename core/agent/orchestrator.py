@@ -14,7 +14,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 from pydantic import ValidationError
 
 from core.agent.llm.base import BaseLLMProvider
-from core.agent.models import PendingApproval, TaskState
+from core.agent.models import PendingApproval, TaskPlan, TaskState, TaskStep, TaskType
 from core.memory.db import DatabaseManager
 from core.tools.base import BaseTool
 from core.tools.registry import ToolRegistry
@@ -25,6 +25,8 @@ from core.types import (
     StatusEvent,
     StatusEventType,
     ToolCall,
+    ToolResult,
+    VerificationReport,
 )
 
 logger = logging.getLogger("orbis.agent.orchestrator")
@@ -237,15 +239,24 @@ class AgentOrchestrator:
         return True
 
     async def run(
-        self, user_request: str, context: Optional[ExecutionContext] = None
+        self,
+        user_request: str,
+        context: Optional[ExecutionContext] = None,
+        task_id: Optional[str] = None,
     ) -> AgentResponse:
         """
-        Executes a single-step agent turn for the given user request.
+        Backward-compatible single-turn execution wrapper around authoritative run_task().
+        Enforces that all requests traverse the unified Phase 6+ planning, DAG validation,
+        authoritative dynamic risk, and human-in-the-loop approval architecture.
         """
-        ctx = context or ExecutionContext()
+        if context is not None:
+            ctx = context
+            if task_id:
+                ctx.task_id = task_id
+        else:
+            ctx = ExecutionContext(task_id=task_id) if task_id else ExecutionContext()
         task_id = ctx.task_id
 
-        # 1. UNDERSTANDING_REQUEST
         await self._emit_event(
             task_id=task_id,
             event_type=StatusEventType.UNDERSTANDING_REQUEST,
@@ -253,194 +264,272 @@ class AgentOrchestrator:
             details={"user_request": user_request},
         )
 
+        # For single-turn callers without an explicit Phase 6 planner, resolve tool via select_tool
+        plan = None
+        if self.planner is None and hasattr(self.llm_provider, "select_tool"):
+            try:
+                tool_call = await self.llm_provider.select_tool(
+                    user_request, self.tool_registry.list_tools()
+                )
+            except Exception as e:
+                error_msg = f"LLM failed during tool selection: {str(e)}"
+                await self._emit_event(
+                    task_id=task_id,
+                    event_type=StatusEventType.FAILED,
+                    summary=error_msg,
+                )
+                return AgentResponse(
+                    task_id=task_id,
+                    status=StatusEventType.FAILED,
+                    summary="Tool selection failed.",
+                    error=error_msg,
+                )
+
+            if tool_call is None:
+                await self._emit_event(
+                    task_id=task_id,
+                    event_type=StatusEventType.COMPLETED,
+                    summary="Request analyzed; no tool required.",
+                )
+                return AgentResponse(
+                    task_id=task_id,
+                    status=StatusEventType.COMPLETED,
+                    summary="Request analyzed; no tool required.",
+                )
+
+            tool = self.tool_registry.get(tool_call.tool_name)
+            if tool is None:
+                error_msg = f"Selected tool '{tool_call.tool_name}' is not registered."
+                await self._emit_event(
+                    task_id=task_id,
+                    event_type=StatusEventType.FAILED,
+                    summary=error_msg,
+                )
+                return AgentResponse(
+                    task_id=task_id,
+                    status=StatusEventType.FAILED,
+                    summary="Tool resolution failed.",
+                    tool_call=tool_call,
+                    error=error_msg,
+                )
+
+            step_id = "step_1"
+            step = TaskStep(
+                step_id=step_id,
+                title=f"Execute {tool_call.tool_name}",
+                tool_name=tool_call.tool_name,
+                parameters=tool_call.parameters,
+                risk_level=tool.risk_level,
+                description=f"Execute {tool_call.tool_name}",
+            )
+            plan = TaskPlan(
+                plan_id=f"plan_{task_id}",
+                request_id=task_id,
+                user_prompt=user_request,
+                task_type=TaskType.SINGLE_STEP,
+                root_step_ids=[step_id],
+                steps={step_id: step},
+            )
+
         try:
-            tool_call = await self.llm_provider.select_tool(
+            exec_res = await self.run_task(
                 user_request=user_request,
-                tools=self.tool_registry.list_tools(),
+                context=ctx,
+                plan=plan,
             )
         except Exception as e:
-            error_msg = f"LLM failed during tool selection: {str(e)}"
+            err_msg = str(e)
+            if "not registered" in err_msg.lower() or "unregistered" in err_msg.lower():
+                err_summary = "Tool resolution failed."
+            else:
+                err_summary = "Execution failed."
+
             await self._emit_event(
                 task_id=task_id,
                 event_type=StatusEventType.FAILED,
-                summary=error_msg,
+                summary=err_msg,
             )
             return AgentResponse(
                 task_id=task_id,
                 status=StatusEventType.FAILED,
-                summary="Tool selection failed.",
-                error=error_msg,
+                summary=err_summary,
+                error=err_msg,
             )
 
-        # If no tool is needed or selected
-        if tool_call is None:
-            summary = "Request analyzed; no tool required."
+        # 1. Action requires user approval (halted at gate)
+        if getattr(exec_res, "status", None) == TaskState.BLOCKED_PENDING_APPROVAL:
+            approval_msg = exec_res.summary or "Action requires explicit user approval before execution."
+            await self._emit_event(
+                task_id=task_id,
+                event_type=StatusEventType.FAILED,
+                summary=approval_msg,
+                risk_level=RiskLevel.HIGH,
+            )
+            return AgentResponse(
+                task_id=task_id,
+                status=StatusEventType.FAILED,
+                summary=approval_msg,
+                error=exec_res.error or approval_msg,
+            )
+
+        # 2. Execution failed or was cancelled
+        if getattr(exec_res, "status", None) != TaskState.COMPLETED:
+            err_msg = exec_res.error or exec_res.summary or "Task execution unsuccessful."
+            failed_step_id = getattr(exec_res, "failed_step", None)
+            step = exec_res.plan.steps.get(failed_step_id) if (exec_res.plan and failed_step_id) else None
+            step_res = exec_res.step_results.get(failed_step_id) if failed_step_id else None
+            ver_rep = exec_res.verification_reports.get(failed_step_id) if failed_step_id else None
+
+            tool_name = step.tool_name if step else (step_res.tool_name if step_res else "unknown")
+            tool_call = ToolCall(tool_name=tool_name, parameters=step.parameters if step else {})
+            tool_result = ToolResult(success=False, error=err_msg, output=step_res.output if step_res else None) if step_res else None
+            risk = step.risk_level if step else RiskLevel.LOW
+
+            if "parameter validation failed" in err_msg.lower() or "validation error" in err_msg.lower():
+                await self._emit_event(
+                    task_id=task_id,
+                    event_type=StatusEventType.FAILED,
+                    summary=err_msg,
+                    risk_level=risk,
+                )
+                return AgentResponse(
+                    task_id=task_id,
+                    status=StatusEventType.FAILED,
+                    summary="Invalid tool parameters.",
+                    tool_call=tool_call,
+                    error=err_msg,
+                )
+
+            if ver_rep is not None and not ver_rep.verified and step_res and step_res.success:
+                verification_err = f"Verification failed: {ver_rep.details}"
+                await self._emit_event(
+                    task_id=task_id,
+                    event_type=StatusEventType.CALLING_TOOL,
+                    summary=f"Executing tool '{tool_name}'.",
+                    details={
+                        "tool_name": tool_name,
+                        "risk_level": risk.value,
+                        "parameters": tool_call.parameters,
+                    },
+                    risk_level=risk,
+                )
+                await self._emit_event(
+                    task_id=task_id,
+                    event_type=StatusEventType.VERIFYING,
+                    summary=f"Verifying execution results for tool '{tool_name}'.",
+                    details={"tool_name": tool_name},
+                    risk_level=risk,
+                )
+                await self._emit_event(
+                    task_id=task_id,
+                    event_type=StatusEventType.FAILED,
+                    summary=verification_err,
+                    details={"discrepancies": ver_rep.discrepancies},
+                    risk_level=risk,
+                )
+                return AgentResponse(
+                    task_id=task_id,
+                    status=StatusEventType.FAILED,
+                    summary="Tool verification failed.",
+                    tool_call=tool_call,
+                    tool_result=tool_result,
+                    verification=VerificationReport(
+                        verified=False,
+                        details=ver_rep.details,
+                        discrepancies=ver_rep.discrepancies,
+                    ),
+                    error=verification_err,
+                )
+
+            if step_res is not None:
+                await self._emit_event(
+                    task_id=task_id,
+                    event_type=StatusEventType.CALLING_TOOL,
+                    summary=f"Executing tool '{tool_name}'.",
+                    details={
+                        "tool_name": tool_name,
+                        "risk_level": risk.value,
+                        "parameters": tool_call.parameters,
+                    },
+                    risk_level=risk,
+                )
+
+            await self._emit_event(
+                task_id=task_id,
+                event_type=StatusEventType.FAILED,
+                summary=err_msg,
+                risk_level=risk,
+            )
+            return AgentResponse(
+                task_id=task_id,
+                status=StatusEventType.FAILED,
+                summary="Tool execution error." if step_res else "Execution failed.",
+                tool_call=tool_call,
+                tool_result=tool_result,
+                error=err_msg,
+            )
+
+        # 3. Successful completion without tool steps (e.g. no tool required)
+        if not exec_res.completed_steps:
             await self._emit_event(
                 task_id=task_id,
                 event_type=StatusEventType.COMPLETED,
-                summary=summary,
+                summary=exec_res.summary,
             )
             return AgentResponse(
                 task_id=task_id,
                 status=StatusEventType.COMPLETED,
-                summary=summary,
+                summary=exec_res.summary,
             )
 
-        # 2. Tool Lookup in Registry
-        tool = self.tool_registry.get(tool_call.tool_name)
-        if tool is None:
-            error_msg = f"Selected tool '{tool_call.tool_name}' is not registered."
-            await self._emit_event(
-                task_id=task_id,
-                event_type=StatusEventType.FAILED,
-                summary=error_msg,
-            )
-            return AgentResponse(
-                task_id=task_id,
-                status=StatusEventType.FAILED,
-                summary="Tool resolution failed.",
-                tool_call=tool_call,
-                error=error_msg,
-            )
+        # 4. Successful completion with executed steps
+        last_step_id = exec_res.completed_steps[-1]
+        step = exec_res.plan.steps.get(last_step_id) if exec_res.plan else None
+        step_res = exec_res.step_results.get(last_step_id)
+        ver_rep = exec_res.verification_reports.get(last_step_id)
 
-        # 3. Safety Boundary & Parameter Validation
-        if not self.check_safety(tool, tool_call.parameters, ctx):
-            error_msg = f"Tool '{tool.name}' failed safety boundary check."
-            await self._emit_event(
-                task_id=task_id,
-                event_type=StatusEventType.FAILED,
-                summary=error_msg,
-                risk_level=tool.risk_level,
-            )
-            return AgentResponse(
-                task_id=task_id,
-                status=StatusEventType.FAILED,
-                summary="Safety boundary violation.",
-                tool_call=tool_call,
-                error=error_msg,
-            )
+        tool_name = step.tool_name if step else (step_res.tool_name if step_res else "unknown")
+        tool_call = ToolCall(tool_name=tool_name, parameters=step.parameters if step else {})
+        tool_result = ToolResult(
+            success=step_res.success if step_res else True,
+            output=step_res.output if step_res else exec_res.final_output,
+            error=step_res.error if step_res else None,
+            metadata=step_res.metadata if step_res else {},
+        )
+        verification = VerificationReport(
+            verified=ver_rep.verified if ver_rep else True,
+            details=ver_rep.details if ver_rep else "Verified successfully.",
+            discrepancies=ver_rep.discrepancies if ver_rep else [],
+        )
+        risk = step.risk_level if step else RiskLevel.LOW
 
-        try:
-            validated_params = tool.validate_parameters(tool_call.parameters)
-        except ValidationError as val_err:
-            error_msg = f"Parameter validation failed for tool '{tool.name}': {str(val_err)}"
-            await self._emit_event(
-                task_id=task_id,
-                event_type=StatusEventType.FAILED,
-                summary=error_msg,
-                details={"errors": val_err.errors()},
-                risk_level=tool.risk_level,
-            )
-            return AgentResponse(
-                task_id=task_id,
-                status=StatusEventType.FAILED,
-                summary="Invalid tool parameters.",
-                tool_call=tool_call,
-                error=error_msg,
-            )
-
-        # 4. CALLING_TOOL
+        # Emit standard status event sequence for listeners
         await self._emit_event(
             task_id=task_id,
             event_type=StatusEventType.CALLING_TOOL,
-            summary=f"Executing tool '{tool.name}'.",
+            summary=f"Executing tool '{tool_name}'.",
             details={
-                "tool_name": tool.name,
-                "risk_level": tool.risk_level.value,
+                "tool_name": tool_name,
+                "risk_level": risk.value,
                 "parameters": tool_call.parameters,
             },
-            risk_level=tool.risk_level,
+            risk_level=risk,
         )
-
-        try:
-            tool_result = await tool.execute(validated_params, ctx)
-        except Exception as e:
-            error_msg = f"Unexpected error during tool execution: {str(e)}"
-            await self._emit_event(
-                task_id=task_id,
-                event_type=StatusEventType.FAILED,
-                summary=error_msg,
-                risk_level=tool.risk_level,
-            )
-            return AgentResponse(
-                task_id=task_id,
-                status=StatusEventType.FAILED,
-                summary="Tool execution error.",
-                tool_call=tool_call,
-                error=error_msg,
-            )
-
-        if not tool_result.success:
-            error_msg = tool_result.error or f"Tool '{tool.name}' returned success=False."
-            await self._emit_event(
-                task_id=task_id,
-                event_type=StatusEventType.FAILED,
-                summary=error_msg,
-                risk_level=tool.risk_level,
-            )
-            return AgentResponse(
-                task_id=task_id,
-                status=StatusEventType.FAILED,
-                summary="Tool execution unsuccessful.",
-                tool_call=tool_call,
-                tool_result=tool_result,
-                error=error_msg,
-            )
-
-        # 5. VERIFYING
         await self._emit_event(
             task_id=task_id,
             event_type=StatusEventType.VERIFYING,
-            summary=f"Verifying execution results for tool '{tool.name}'.",
-            details={"tool_name": tool.name},
-            risk_level=tool.risk_level,
+            summary=f"Verifying execution results for tool '{tool_name}'.",
+            details={"tool_name": tool_name},
+            risk_level=risk,
         )
 
-        try:
-            verification = await tool.verify(validated_params, tool_result, ctx)
-        except Exception as e:
-            error_msg = f"Unexpected error during tool verification: {str(e)}"
-            await self._emit_event(
-                task_id=task_id,
-                event_type=StatusEventType.FAILED,
-                summary=error_msg,
-                risk_level=tool.risk_level,
-            )
-            return AgentResponse(
-                task_id=task_id,
-                status=StatusEventType.FAILED,
-                summary="Tool verification error.",
-                tool_call=tool_call,
-                tool_result=tool_result,
-                error=error_msg,
-            )
-
-        if not verification.verified:
-            error_msg = f"Verification failed: {verification.details}"
-            await self._emit_event(
-                task_id=task_id,
-                event_type=StatusEventType.FAILED,
-                summary=error_msg,
-                details={"discrepancies": verification.discrepancies},
-                risk_level=tool.risk_level,
-            )
-            return AgentResponse(
-                task_id=task_id,
-                status=StatusEventType.FAILED,
-                summary="Tool verification failed.",
-                tool_call=tool_call,
-                tool_result=tool_result,
-                verification=verification,
-                error=error_msg,
-            )
-
-        # 6. Audit Logging in SQLite
+        # Audit Logging in SQLite
         if self.db_manager:
             try:
                 self.db_manager.log_action(
                     task_id=task_id,
-                    action_name=tool.name,
-                    risk_level=tool.risk_level.value,
+                    action_name=tool_name,
+                    risk_level=risk.value,
                     parameters=tool_call.parameters,
                     result={"output": tool_result.output, "metadata": tool_result.metadata},
                     verified=verification.verified,
@@ -448,38 +537,18 @@ class AgentOrchestrator:
             except Exception as e:
                 logger.warning("Failed to record audit log: %s", e)
 
-        # 7. COMPLETED
-        final_summary = f"Tool '{tool.name}' executed and verified successfully."
-
-        # Synthesize research answer if web research was executed and LLM provider is present
-        if (
-            tool.name == "web_research"
-            and isinstance(tool_result.output, dict)
-            and tool_result.output.get("action") == "research"
-            and self.llm_provider is not None
-        ):
-            synthesized = await self.synthesize_research_answer(
-                user_request=user_request,
-                research_output=tool_result.output,
-            )
-            if synthesized:
-                tool_result.output["text"] = synthesized
-                tool_result.output["summary"] = synthesized
-                tool_result.output["synthesized_answer"] = synthesized
-                final_summary = synthesized
-
         await self._emit_event(
             task_id=task_id,
             event_type=StatusEventType.COMPLETED,
-            summary=final_summary,
+            summary=exec_res.summary,
             details={"output": tool_result.output},
-            risk_level=tool.risk_level,
+            risk_level=risk,
         )
 
         return AgentResponse(
             task_id=task_id,
             status=StatusEventType.COMPLETED,
-            summary=final_summary,
+            summary=exec_res.summary,
             tool_call=tool_call,
             tool_result=tool_result,
             verification=verification,
@@ -583,6 +652,7 @@ class AgentOrchestrator:
         user_request: str,
         context: Optional[ExecutionContext] = None,
         approval_callback: Optional[Any] = None,
+        plan: Optional[Any] = None,
     ) -> Any:
         """
         Phase 6 Multi-Step Execution Path:
@@ -645,17 +715,18 @@ class AgentOrchestrator:
             planner=planner,
         )
 
-        request = AgentRequest(
-            request_id=ctx.task_id,
-            user_prompt=user_request,
-            context=ctx,
-        )
+        if plan is None:
+            request = AgentRequest(
+                request_id=ctx.task_id,
+                user_prompt=user_request,
+                context=ctx,
+            )
 
-        plan_res = planner.plan(request, self.tool_registry)
-        if inspect.isawaitable(plan_res):
-            plan = await plan_res
-        else:
-            plan = plan_res
+            plan_res = planner.plan(request, self.tool_registry)
+            if inspect.isawaitable(plan_res):
+                plan = await plan_res
+            else:
+                plan = plan_res
 
         exec_res = await executor.execute(
             plan=plan,

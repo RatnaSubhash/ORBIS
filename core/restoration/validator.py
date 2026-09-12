@@ -150,6 +150,10 @@ class PreflightValidator:
         if target.target_type in (ResourceTargetType.WORKSPACE_FILE, ResourceTargetType.DIRECTORY):
             return self._validate_local_path(raw, target.target_type)
 
+        # Case C: Unknown / Unresolved Resource Type
+        if target.target_type == ResourceTargetType.UNKNOWN:
+            return False, None, f"Resource target '{raw}' is of unknown or ambiguous type and cannot be safely resolved."
+
         return True, raw, None
 
     def _validate_web_url(self, raw_url: str) -> Tuple[bool, Optional[str], Optional[str]]:

@@ -605,15 +605,19 @@ class HierarchicalPlanner(BasePlanner):
         self, request: AgentRequest, tool_registry: ToolRegistry, message: str
     ) -> TaskPlan:
         """Constructs an immediate clarification plan for ambiguous or malformed queries."""
-        echo_tool = tool_registry.get("echo") or tool_registry.get("echo_tool") or tool_registry.list_tools()[0]
-        step_id = "step_clarification"
+        echo_tool = tool_registry.get("echo") or tool_registry.get("echo_tool")
+        if echo_tool is None:
+            raise ValueError(
+                "Clarification required for request, but no safe echo tool is registered in the tool registry."
+            )
 
+        step_id = "step_clarification"
         step = TaskStep(
             step_id=step_id,
             title="Request Clarification",
             description="Requests user clarification for ambiguous or malformed input.",
             tool_name=echo_tool.name,
-            parameters={"message": message} if echo_tool.name in ("echo", "echo_tool") else {},
+            parameters={"message": message},
             dependencies=[],
             state=TaskState.READY,
             risk_level=echo_tool.risk_level,
@@ -841,18 +845,22 @@ class HierarchicalPlanner(BasePlanner):
         self, request: AgentRequest, tool_registry: ToolRegistry
     ) -> TaskPlan:
         """Fallback for requests that don't match explicit patterns."""
-        tool = tool_registry.get("echo") or tool_registry.get("echo_tool") or tool_registry.list_tools()[0]
-        step_id = "step_default"
+        echo_tool = tool_registry.get("echo") or tool_registry.get("echo_tool")
+        if echo_tool is None:
+            raise ValueError(
+                "No suitable tool found to satisfy request and no safe echo fallback is registered in the tool registry."
+            )
 
+        step_id = "step_default"
         step = TaskStep(
             step_id=step_id,
             title="Execute default action",
             description="Fallback single step execution.",
-            tool_name=tool.name,
-            parameters={"message": request.user_prompt} if tool.name in ("echo", "echo_tool") else {},
+            tool_name=echo_tool.name,
+            parameters={"message": request.user_prompt},
             dependencies=[],
             state=TaskState.READY,
-            risk_level=tool.risk_level,
+            risk_level=echo_tool.risk_level,
         )
 
         plan = TaskPlan(

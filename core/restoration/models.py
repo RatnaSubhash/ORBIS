@@ -27,6 +27,7 @@ class ResourceTargetType(str, Enum):
     WEB_URL = "WEB_URL"
     DIRECTORY = "DIRECTORY"
     NONE = "NONE"
+    UNKNOWN = "UNKNOWN"
 
 
 class WindowBounds(BaseModel):
