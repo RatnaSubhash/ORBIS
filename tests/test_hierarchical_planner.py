@@ -366,3 +366,266 @@ def test_extract_json_object_helper():
     assert extract_json_object("{malformed json:") is None
     assert extract_json_object("[1, 2, 3]") is None
     assert extract_json_object("") is None
+
+
+# ------------------------------------------------------------------------------
+# Phase 11.5 Voice & Q&A Quality Hardening Tests
+# ------------------------------------------------------------------------------
+
+@pytest.fixture
+def full_test_registry(test_registry: ToolRegistry) -> ToolRegistry:
+    from core.tools.web_research_tool import WebResearchTool
+    from core.tools.terminal_tool import TerminalTool
+    from core.tools.desktop_tool import DesktopTool
+    from core.tools.continuity_tool import ContinuityTool
+    from core.memory.db import DatabaseManager
+    from core.continuity.service import ContinuityService
+
+    reg = ToolRegistry()
+    for t in test_registry.list_tools():
+        reg.register(t)
+    reg.register(WebResearchTool())
+    reg.register(TerminalTool())
+    reg.register(DesktopTool())
+    db = DatabaseManager(db_path=":memory:")
+    db.initialize()
+    cs = ContinuityService(db=db)
+    reg.register(ContinuityTool(continuity_service=cs))
+    return reg
+
+
+@pytest.mark.asyncio
+async def test_temporal_query_routing_to_web_research(full_test_registry: ToolRegistry):
+    """
+    Verifies that requests with freshness/temporal signals ('latest', 'current', 'today', 'recently', etc.)
+    route deterministically to WebResearchTool rather than relying on stale/hallucinated local LLM knowledge.
+    """
+    planner = HierarchicalPlanner()
+
+    prompts = [
+        ("What is the latest version of Python?", "latest version of Python"),
+        ("What is the current version of Docker?", "current version of Docker"),
+        ("What is the news today?", "news today"),
+        ("What happened recently in AI?", "recently in AI"),
+        ("Tell me the current version of PostgreSQL", "current version of PostgreSQL"),
+    ]
+
+    for user_prompt, expected_substr in prompts:
+        req = AgentRequest(user_prompt=user_prompt)
+        plan = await planner.plan(req, full_test_registry)
+
+        assert "step_web_research" in plan.steps, f"Failed to route '{user_prompt}' to web_research"
+        step = plan.steps["step_web_research"]
+        assert step.tool_name == "web_research"
+        assert step.parameters["action"] == "research"
+        assert expected_substr.lower() in step.parameters["query"].lower()
+
+
+@pytest.mark.asyncio
+async def test_implicit_current_office_holder_query_routing(full_test_registry: ToolRegistry):
+    """
+    Verifies that questions implicitly requesting current office holders or leadership roles
+    (Chief Minister, Prime Minister, President, CEO, Governor, Mayor, etc.) are treated as
+    freshness-sensitive factual queries and routed to WebResearchTool even without explicit 'current'.
+    """
+    planner = HierarchicalPlanner()
+
+    prompts = [
+        ("Who is the Chief Minister of Tamil Nadu?", "Chief Minister of Tamil Nadu"),
+        ("Who is the Prime Minister of India?", "Prime Minister of India"),
+        ("Who is the current CEO of Microsoft?", "current CEO of Microsoft"),
+        ("Who is the President of India?", "President of India"),
+    ]
+
+    for user_prompt, expected_query in prompts:
+        req = AgentRequest(user_prompt=user_prompt)
+        plan = await planner.plan(req, full_test_registry)
+
+        assert "step_web_research" in plan.steps, f"Failed to route office-holder question '{user_prompt}' to web_research"
+        step = plan.steps["step_web_research"]
+        assert step.tool_name == "web_research"
+        assert step.parameters["action"] == "research"
+        assert step.parameters["query"].lower() == expected_query.lower()
+
+
+@pytest.mark.asyncio
+async def test_temporal_query_local_system_exclusion(full_test_registry: ToolRegistry):
+    """
+    Verifies that temporal words ('current', 'latest') referring to local system context
+    (git, terminal, desktop, windows) are NOT misrouted to web research.
+    """
+    planner = HierarchicalPlanner()
+
+    # Git command with 'current' or 'status'
+    req_git = AgentRequest(user_prompt="Check current git status")
+    plan_git = await planner.plan(req_git, full_test_registry)
+    assert "step_terminal_cmd" in plan_git.steps
+    assert "step_web_research" not in plan_git.steps
+
+    # Desktop window inspection with 'current' or 'window'
+    req_desk = AgentRequest(user_prompt="Inspect current desktop windows")
+    plan_desk = await planner.plan(req_desk, full_test_registry)
+    assert "step_inspect_desktop" in plan_desk.steps
+    assert "step_web_research" not in plan_desk.steps
+
+
+@pytest.mark.asyncio
+async def test_continuity_precedence_over_temporal_signals(full_test_registry: ToolRegistry):
+    """
+    Verifies that continuity queries ('What was I working on?', 'Where did I leave off?')
+    strictly maintain top precedence and are routed to continuity rather than web research.
+    """
+    planner = HierarchicalPlanner()
+
+    continuity_prompts = [
+        "What was I working on?",
+        "What did I work on in my previous session?",
+        "Where did I leave off?",
+    ]
+
+    for p in continuity_prompts:
+        req = AgentRequest(user_prompt=p)
+        plan = await planner.plan(req, full_test_registry)
+        # Should be an intent continuity or descriptive continuity step, never web research
+        assert "step_web_research" not in plan.steps
+        step_ids = list(plan.steps.keys())
+        assert any("continuity" in sid for sid in step_ids)
+
+
+@pytest.mark.asyncio
+async def test_llm_planner_simple_question_uses_echo(test_registry: ToolRegistry):
+    """
+    Verifies that the LLM planner creates a single-step 'echo' plan for general Q&A
+    rather than invoking heavy multi-step document generation.
+    """
+    direct_qa_plan = """{
+        "plan_id": "plan_qa_1",
+        "request_id": "req_qa",
+        "user_prompt": "What is artificial intelligence?",
+        "task_type": "single_step",
+        "root_step_ids": ["step1"],
+        "steps": {
+            "step1": {
+                "step_id": "step1",
+                "title": "Explain AI",
+                "tool_name": "echo",
+                "parameters": {
+                    "message": "Artificial intelligence is the simulation of human intelligence by machines."
+                },
+                "dependencies": [],
+                "state": "READY"
+            }
+        }
+    }"""
+    mock_llm = MockLLMProvider(default_text_response=direct_qa_plan)
+    planner = HierarchicalPlanner(llm_provider=mock_llm)
+
+    req = AgentRequest(user_prompt="What is artificial intelligence?")
+    plan = await planner.plan(req, test_registry)
+
+    assert len(plan.steps) == 1
+    assert "step1" in plan.steps
+    assert plan.steps["step1"].tool_name == "echo"
+    assert "Artificial intelligence" in plan.steps["step1"].parameters["message"]
+
+
+@pytest.mark.asyncio
+async def test_llm_planner_ambiguous_question_asks_clarification(test_registry: ToolRegistry):
+    """
+    Verifies that ambiguous requests produce a plan that asks for clarification
+    rather than fabricating an answer.
+    """
+    clarification_plan = """{
+        "plan_id": "plan_clarify_1",
+        "request_id": "req_ambiguous",
+        "user_prompt": "Do you know Raja version?",
+        "task_type": "single_step",
+        "root_step_ids": ["step1"],
+        "steps": {
+            "step1": {
+                "step_id": "step1",
+                "title": "Ask for clarification",
+                "tool_name": "echo",
+                "parameters": {
+                    "message": "I am not sure what Raja refers to. Could you clarify which software or project you mean?"
+                },
+                "dependencies": [],
+                "state": "READY"
+            }
+        }
+    }"""
+    mock_llm = MockLLMProvider(default_text_response=clarification_plan)
+    planner = HierarchicalPlanner(llm_provider=mock_llm)
+
+    req = AgentRequest(user_prompt="Do you know Raja version?")
+    plan = await planner.plan(req, test_registry)
+
+    assert "step1" in plan.steps
+    msg = plan.steps["step1"].parameters["message"]
+    assert "clarify" in msg.lower() or "not sure" in msg.lower()
+    assert "1.2.3" not in msg  # No hallucinated version number
+
+
+@pytest.mark.asyncio
+async def test_web_research_tool_grounded_summary_and_no_results():
+    """
+    Verifies that WebResearchTool action='research' grounds the spoken summary
+    in the actual extracted page content and provides a clear no-results message when empty.
+    """
+    import types
+    from core.tools.web_research_tool import WebResearchTool, WebResearchParameters
+    from core.tools.search_provider import MockSearchProvider, SearchResult
+    from core.types import ExecutionContext
+    from core.voice.service import extract_spoken_response
+    from core.agent.models import TaskState
+
+    # Case 1: Extracted content available
+    def custom_fetcher(url: str):
+        return 200, "Python Docs", "<html><body><p>Python 3.12 is the latest stable release featuring enhanced error messages.</p></body></html>"
+
+    mock_provider = MockSearchProvider()
+    mock_provider.set_mock_results(
+        "latest python",
+        [SearchResult(title="Python Org", url="https://python.org/latest", snippet="Python downloads")],
+    )
+
+    tool = WebResearchTool(search_provider=mock_provider, mock_fetcher=custom_fetcher)
+    ctx = ExecutionContext()
+    res = await tool.execute(WebResearchParameters(action="research", query="latest python"), ctx)
+
+    assert res.success is True
+    assert "summary" in res.output
+    assert "text" in res.output
+    # Must be grounded in actual extracted content, not just the snippet
+    assert "enhanced error messages" in res.output["summary"]
+    assert "python.org" in res.output["summary"]
+
+    # Verify extract_spoken_response extracts this grounded summary for voice
+    fake_exec_res = types.SimpleNamespace(
+        plan_id="p1",
+        status=TaskState.COMPLETED,
+        completed_steps=["step1"],
+        final_output=res.output,
+        summary="Task completed successfully.",
+    )
+    spoken = extract_spoken_response(fake_exec_res)
+    assert "enhanced error messages" in spoken
+    assert "python.org" in spoken
+
+    # Case 2: No search results found
+    empty_provider = MockSearchProvider()
+    empty_provider.set_mock_results("unknown query xyz", [])
+    empty_tool = WebResearchTool(search_provider=empty_provider)
+    res_empty = await empty_tool.execute(WebResearchParameters(action="research", query="unknown query xyz"), ctx)
+
+    assert res_empty.success is True
+    assert "No web research results found" in res_empty.output["summary"]
+    fake_empty_exec = types.SimpleNamespace(
+        plan_id="p2",
+        status=TaskState.COMPLETED,
+        completed_steps=["step1"],
+        final_output=res_empty.output,
+        summary="Task completed successfully.",
+    )
+    spoken_empty = extract_spoken_response(fake_empty_exec)
+    assert "No web research results found" in spoken_empty

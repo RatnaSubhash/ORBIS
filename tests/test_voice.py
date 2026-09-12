@@ -729,3 +729,54 @@ async def test_voice_service_surfaces_useful_tool_output():
     # Must speak the actual echoed content, not "Multi-step task completed successfully"
     assert "Hello I am speaking tool output" in tts.spoken_history[-1]
     assert "Multi-step task completed successfully" not in tts.spoken_history[-1]
+
+
+@pytest.mark.asyncio
+async def test_voice_agent_registry_contains_web_research():
+    """
+    Verifies that the authoritative voice/agent tool registry contains WebResearchTool
+    registered as 'web_research', and that a voice interaction for a freshness query
+    successfully validates and executes through the full VoiceService pipeline.
+    """
+    from core.tools.registry import create_default_tool_registry
+    from core.tools.web_research_tool import WebResearchTool
+    from core.tools.search_provider import MockSearchProvider, SearchResult
+
+    mock_search = MockSearchProvider()
+    mock_search.set_mock_results(
+        "latest python version",
+        [SearchResult(title="Python Org", url="https://python.org", snippet="Python 3.12 is latest release")],
+    )
+
+    def mock_fetcher(url: str):
+        return 200, "Python Org", "<html><body><p>Python 3.12 is the latest stable release.</p></body></html>"
+
+    db = DatabaseManager(db_path=":memory:")
+    db.initialize()
+    tools = create_default_tool_registry(
+        db=db,
+        search_provider=mock_search,
+        mock_web_fetcher=mock_fetcher,
+    )
+
+    # 1. Authoritative registration invariant
+    tool = tools.get("web_research")
+    assert tool is not None, "web_research must be registered in the voice/agent tool registry"
+    assert isinstance(tool, WebResearchTool)
+    assert tool.name == "web_research"
+
+    # 2. Voice Pipeline Integration
+    stt = MockSTTProvider()
+    tts = MockTTSProvider()
+    orchestrator = AgentOrchestrator(llm_provider=MockLLMProvider(), tool_registry=tools, db_manager=db)
+    service = VoiceService(orchestrator=orchestrator, stt_provider=stt, tts_provider=tts)
+
+    stt.queue_transcript("What is the latest Python version?")
+    audio = AudioBuffer(data=b"\x01\x00" * 16000, sample_rate=16000)
+
+    res = await service.process_spoken_request(audio)
+    assert res.success is True
+    assert len(tts.spoken_history) > 0
+    spoken = tts.spoken_history[-1]
+    assert "python" in spoken.lower()
+    assert "unregistered tool" not in spoken.lower()

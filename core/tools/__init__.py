@@ -9,7 +9,7 @@ from core.tools.continuity_tool import ContinuityTool, ContinuityToolParameters
 from core.tools.desktop_tool import DesktopTool
 from core.tools.echo_tool import EchoTool
 from core.tools.file_tool import FileTool
-from core.tools.registry import ToolRegistry
+from core.tools.registry import ToolRegistry, create_default_tool_registry
 from core.tools.search_provider import (
     BaseSearchProvider,
     ConfigurableSearchProvider,
@@ -32,6 +32,7 @@ from core.tools.web_research_tool import (
 __all__ = [
     "BaseTool",
     "ToolRegistry",
+    "create_default_tool_registry",
     "EchoTool",
     "DesktopTool",
     "FileTool",

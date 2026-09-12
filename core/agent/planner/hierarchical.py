@@ -170,9 +170,30 @@ class HierarchicalPlanner(BasePlanner):
         ):
             return self._plan_document_creation_task(request, tool_registry)
 
-        # 4. Check for Web Research Pattern (Phase 7)
+        # 4. Check for Web Research, Freshness/Temporal Query, or Office-Holder Pattern (Phase 7 & Phase 11.5)
+        has_explicit_web = (
+            "search" in lower_prompt
+            or "web" in lower_prompt
+            or "research" in lower_prompt
+            or "lookup online" in lower_prompt
+            or "find online" in lower_prompt
+        )
+        has_temporal_signal = bool(
+            re.search(r"\b(latest|current|today|recently|news|current version|currently)\b", lower_prompt)
+        )
+        has_office_holder_signal = bool(
+            re.search(
+                r"\bwho(?:'s|\s+is)\s+(?:the\s+)?(?:\w+\s+)*(minister|president|ceo|cto|cfo|governor|mayor|chancellor)\b",
+                lower_prompt,
+            )
+        )
+        is_local_system_query = any(
+            term in lower_prompt
+            for term in ("git", "pytest", "terminal", "directory", "folder", "desktop", "window", "process")
+        )
+
         if (
-            ("search" in lower_prompt or "web" in lower_prompt or "research" in lower_prompt or "lookup online" in lower_prompt or "find online" in lower_prompt)
+            (has_explicit_web or ((has_temporal_signal or has_office_holder_signal) and not is_local_system_query))
             and tool_registry.get("web_research") is not None
         ):
             return self._plan_web_research_task(request, tool_registry)
@@ -192,7 +213,10 @@ class HierarchicalPlanner(BasePlanner):
             return self._plan_file_summary_hierarchy(request, tool_registry)
 
         # 5. Check for Desktop Inspection Pattern
-        if "desktop" in lower_prompt or "window" in lower_prompt or "process" in lower_prompt:
+        if (
+            ("desktop" in lower_prompt or "window" in lower_prompt or "process" in lower_prompt)
+            and (tool_registry.get("desktop") is not None or tool_registry.get("desktop_tool") is not None)
+        ):
             return self._plan_desktop_inspection(request, tool_registry)
 
         # 6. Check for Echo / Message Pattern
@@ -491,7 +515,11 @@ class HierarchicalPlanner(BasePlanner):
         self, request: AgentRequest, tool_registry: ToolRegistry
     ) -> TaskPlan:
         """Constructs a plan for desktop inspection."""
-        tool = tool_registry.get_or_raise("desktop_tool")
+        tool = (
+            tool_registry.get("desktop")
+            or tool_registry.get("desktop_tool")
+            or tool_registry.get_or_raise("desktop_tool")
+        )
         action = "inspect_running_processes" if "process" in request.user_prompt.lower() else "inspect_active_window"
         step_id = "step_inspect_desktop"
 
@@ -555,11 +583,32 @@ class HierarchicalPlanner(BasePlanner):
 
         # Extract search query
         query = prompt
-        for prefix in (
-            "search the web for", "search for", "search web for",
-            "research on", "research", "lookup online for",
-            "find online information about", "find online",
-        ):
+        prefixes = sorted(
+            [
+                "search the web for and summarize",
+                "search the web for",
+                "search for",
+                "search web for",
+                "research on",
+                "research",
+                "lookup online for",
+                "find online information about",
+                "find online",
+                "what is the",
+                "what are the",
+                "tell me about",
+                "tell me the",
+                "tell me",
+                "what is",
+                "what are",
+                "who is the",
+                "who is",
+                "do you know",
+            ],
+            key=len,
+            reverse=True,
+        )
+        for prefix in prefixes:
             if lower.startswith(prefix):
                 query = prompt[len(prefix):].strip()
                 break
@@ -1011,6 +1060,14 @@ class HierarchicalPlanner(BasePlanner):
             "Given a user prompt and available tools, create a structured execution plan.\n"
             "You MUST respond ONLY with a valid JSON object strictly conforming to the TaskPlan schema.\n"
             "Do NOT output markdown code blocks, conversational filler, or chain-of-thought.\n"
+            "\n"
+            "PLANNING & TOOL SELECTION RULES:\n"
+            "1. For simple conversational questions, direct answers, greetings, or explanations (e.g., 'What is AI?', 'Explain computer networks', 'What can you do?'), use the 'echo' tool with the direct, concise answer in the 'message' parameter. Do NOT use 'content_generator' or 'document' unless the user explicitly requested creating a document, file, or report.\n"
+            "2. For questions asking for current, latest, or real-time information, or current office holders / leadership roles (e.g., 'latest news', 'current version of X', 'Who is the Chief Minister/President/CEO of Y?'), use the 'web_research' tool with action 'research'. Do NOT invent current facts or office holders from memory.\n"
+            "3. CRITICAL GROUNDING & AMBIGUITY RULES:\n"
+            "   - If the user prompt is ambiguous, nonsensical, unclear, or asks about unknown or unverified entities/versions (e.g., 'Do you know Raja version?', 'What is the city where you are famous for?'), do NOT invent, assume, or hallucinate facts or version numbers.\n"
+            "   - Instead, use the 'echo' tool with a clarifying question or clearly state that the request is unclear or that available information is insufficient to answer (e.g., 'I am not sure what Raja refers to. Could you clarify which software or project you mean?').\n"
+            "\n"
             "TaskPlan JSON Schema:\n"
             "{\n"
             f'  "request_id": "{request.request_id}",\n'

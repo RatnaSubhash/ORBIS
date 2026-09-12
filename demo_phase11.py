@@ -25,6 +25,7 @@ from core.tools.intent_tool import IntentContinuityTool
 from core.tools.registry import ToolRegistry
 from core.tools.restoration_tool import RestorationTool
 from core.tools.voice_tool import VoiceTool
+from core.tools.web_research_tool import WebResearchTool
 from core.types import ExecutionContext, RiskLevel, Session
 from core.voice.capture.mock_capture import MockAudioCapture
 from core.voice.capture.sounddevice_capture import SoundDeviceAudioCapture
@@ -67,6 +68,7 @@ async def run_phase11_demo(live_mode: bool = False) -> None:
     intent_tool = IntentContinuityTool(db=db)
     tools.register(intent_tool)
     tools.register(RestorationTool(db=db))
+    tools.register(WebResearchTool())
 
     mock_llm = MockLLMProvider()
     continuity_svc = ContinuityService(db=db)

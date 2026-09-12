@@ -3,7 +3,7 @@ Tool Registry for ORBIS.
 Manages tool registration, lookup, duplicate name prevention, and catalog discovery.
 """
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from core.tools.base import BaseTool
 
@@ -68,3 +68,60 @@ class ToolRegistry:
                 }
             )
         return schemas
+
+
+def create_default_tool_registry(
+    db: Optional[Any] = None,
+    search_provider: Optional[Any] = None,
+    mock_web_fetcher: Optional[Any] = None,
+    allowed_workspace_root: Optional[str] = None,
+    mock_terminal_runner: Optional[Any] = None,
+    content_generator: Optional[Any] = None,
+    tts_provider: Optional[Any] = None,
+) -> ToolRegistry:
+    """
+    Constructs an authoritative, fully populated ToolRegistry containing all
+    implemented Phase 1 through Phase 11 tools with their standard configurations.
+    Ensures WebResearchTool is registered as 'web_research' across all agent pipelines.
+    """
+    from core.tools.echo_tool import EchoTool
+    from core.tools.file_tool import FileTool
+    from core.tools.desktop_tool import DesktopTool
+    from core.tools.continuity_tool import ContinuityTool
+    from core.tools.terminal_tool import TerminalTool
+    from core.tools.web_research_tool import WebResearchTool
+    from core.tools.content_tool import ContentGeneratorTool
+    from core.tools.document_tool import DocumentTool
+    from core.tools.intent_tool import IntentContinuityTool
+    from core.tools.restoration_tool import RestorationTool
+
+    registry = ToolRegistry()
+    registry.register(EchoTool())
+    registry.register(FileTool())
+    registry.register(DesktopTool())
+
+    if db is not None:
+        registry.register(ContinuityTool(db=db))
+        registry.register(IntentContinuityTool(db=db))
+        registry.register(RestorationTool(db=db))
+    else:
+        registry.register(ContinuityTool())
+        registry.register(IntentContinuityTool())
+        registry.register(RestorationTool())
+
+    registry.register(
+        TerminalTool(
+            allowed_workspace_root=allowed_workspace_root,
+            mock_runner=mock_terminal_runner,
+        )
+    )
+    registry.register(WebResearchTool(search_provider=search_provider, mock_fetcher=mock_web_fetcher))
+    registry.register(ContentGeneratorTool(generator=content_generator))
+    registry.register(DocumentTool())
+
+    if tts_provider is not None:
+        from core.tools.voice_tool import VoiceTool
+        registry.register(VoiceTool(tts_provider=tts_provider))
+
+    return registry
+
