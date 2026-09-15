@@ -24,6 +24,9 @@ from core.agent.models import (
     TaskStep,
     TaskType,
 )
+from core.events.bus import EventBus
+from core.events.models import AgentEvent, AgentEventType
+from core.events.sanitizer import EventSanitizer
 from core.memory.db import DatabaseManager
 from core.tools.base import BaseTool
 from core.tools.registry import ToolRegistry
@@ -255,6 +258,7 @@ class AgentOrchestrator:
         executor: Optional[Any] = None,
         voice_service: Optional[Any] = None,
         conversation_context: Optional[ConversationContext] = None,
+        event_bus: Optional[EventBus] = None,
     ) -> None:
         self.llm_provider = llm_provider
         self.tool_registry = tool_registry
@@ -266,8 +270,39 @@ class AgentOrchestrator:
         self.executor = executor
         self.voice_service = voice_service
         self.conversation_context: ConversationContext = conversation_context or ConversationContext()
+        self.event_bus: EventBus = event_bus if event_bus is not None else EventBus()
         self._pending_approval: Optional[PendingApproval] = None
         self._listeners: List[EventListener] = []
+
+    def _emit_agent_event(
+        self,
+        event_type: AgentEventType,
+        task_id: str,
+        correlation_id: str,
+        safe_user_message: str,
+        status: str = "IN_PROGRESS",
+        parent_task_id: Optional[str] = None,
+        step_id: Optional[str] = None,
+        tool_name: Optional[str] = None,
+        risk_level: Optional[RiskLevel] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> AgentEvent:
+        """Constructs and broadcasts a sanitized, user-facing AgentEvent to the event bus."""
+        event = EventSanitizer.create_safe_event(
+            event_type=event_type,
+            task_id=task_id,
+            correlation_id=correlation_id,
+            safe_user_message=safe_user_message,
+            status=status,
+            parent_task_id=parent_task_id,
+            step_id=step_id,
+            tool_name=tool_name,
+            risk_level=risk_level,
+            metadata=metadata,
+        )
+        if self.event_bus is not None:
+            self.event_bus.publish_nowait(event)
+        return event
 
     def add_event_listener(self, listener: EventListener) -> None:
         """Subscribes an async callback to receive status events."""
@@ -752,6 +787,11 @@ class AgentOrchestrator:
         from core.agent.planner.hierarchical import HierarchicalPlanner
         from core.voice.normalizer import VoiceNormalizer
 
+        ctx = context or ExecutionContext()
+        task_id = ctx.task_id
+        correlation_id = ctx.metadata.get("correlation_id") or f"corr_{task_id}"
+        ctx.metadata["correlation_id"] = correlation_id
+
         # 1. Check for Pending Approval
         if self._pending_approval is not None:
             now = datetime.now(timezone.utc)
@@ -774,6 +814,15 @@ class AgentOrchestrator:
                 if is_aff and not is_neg:
                     logger.info("User granted affirmative approval for pending step %s (%s).", pending.blocked_step_id, pending.tool_name)
                     self._pending_approval = None
+                    self._emit_agent_event(
+                        event_type=AgentEventType.APPROVAL_GRANTED,
+                        task_id=pending.task_id,
+                        correlation_id=correlation_id,
+                        safe_user_message=f"User approved execution of step '{pending.blocked_step_id}' ({pending.tool_name}).",
+                        status="RUNNING",
+                        step_id=pending.blocked_step_id,
+                        tool_name=pending.tool_name,
+                    )
                     return await self._resume_pending_plan(
                         pending=pending,
                         user_request=user_request,
@@ -784,6 +833,24 @@ class AgentOrchestrator:
                     self._pending_approval = None
                     target_name = pending.target_resource or "file"
                     cancellation_msg = f"Action cancelled. '{target_name}' was not modified."
+                    self._emit_agent_event(
+                        event_type=AgentEventType.APPROVAL_DENIED,
+                        task_id=pending.task_id,
+                        correlation_id=correlation_id,
+                        safe_user_message="User denied action approval.",
+                        status="CANCELLED",
+                        step_id=pending.blocked_step_id,
+                        tool_name=pending.tool_name,
+                    )
+                    self._emit_agent_event(
+                        event_type=AgentEventType.TASK_CANCELLED,
+                        task_id=pending.task_id,
+                        correlation_id=correlation_id,
+                        safe_user_message=cancellation_msg,
+                        status="CANCELLED",
+                        step_id=pending.blocked_step_id,
+                        tool_name=pending.tool_name,
+                    )
                     return AgentExecutionResult(
                         task_id=pending.task_id,
                         request=user_request,
@@ -796,11 +863,19 @@ class AgentOrchestrator:
                     logger.info("Unrelated request received; invalidating pending approval for step %s.", pending.blocked_step_id)
                     self._pending_approval = None
 
-        ctx = context or ExecutionContext()
+        self._emit_agent_event(
+            event_type=AgentEventType.TASK_STARTED,
+            task_id=task_id,
+            correlation_id=correlation_id,
+            safe_user_message=f"Task started: {user_request}",
+            status="RUNNING",
+        )
+
         planner = self.planner or HierarchicalPlanner(llm_provider=self.llm_provider)
         executor = self.executor or TaskExecutor(
             tool_registry=self.tool_registry,
             planner=planner,
+            event_bus=self.event_bus,
         )
 
         # Resolve conversational continuity (pronouns, references, topic return)
@@ -835,10 +910,21 @@ class AgentOrchestrator:
             else:
                 plan = plan_res
 
+        if plan and plan.steps:
+            self._emit_agent_event(
+                event_type=AgentEventType.PLAN_CREATED,
+                task_id=task_id,
+                correlation_id=correlation_id,
+                safe_user_message=f"Plan formulated with {len(plan.steps)} steps.",
+                status="RUNNING",
+                metadata={"step_count": len(plan.steps), "task_type": plan.task_type.value},
+            )
+
         exec_res = await executor.execute(
             plan=plan,
             context=ctx,
             approval_callback=approval_callback,
+            event_bus=self.event_bus,
         )
 
         # Retain pending approval if task halted in BLOCKED_PENDING_APPROVAL
@@ -873,6 +959,31 @@ class AgentOrchestrator:
                     research_step_output = step_res.output
 
             if research_step_output is not None:
+                self._emit_agent_event(
+                    event_type=AgentEventType.RESEARCH_STARTED,
+                    task_id=task_id,
+                    correlation_id=correlation_id,
+                    safe_user_message="Web research initiated.",
+                    status="RUNNING",
+                )
+                search_results = research_step_output.get("search_results") or []
+                if search_results:
+                    self._emit_agent_event(
+                        event_type=AgentEventType.SOURCE_FOUND,
+                        task_id=task_id,
+                        correlation_id=correlation_id,
+                        safe_user_message=f"Discovered {len(search_results)} search sources.",
+                        status="RUNNING",
+                        metadata={"source_count": len(search_results)},
+                    )
+                if research_step_output.get("extracted_text") or research_step_output.get("evidence"):
+                    self._emit_agent_event(
+                        event_type=AgentEventType.SOURCE_READ,
+                        task_id=task_id,
+                        correlation_id=correlation_id,
+                        safe_user_message="Read and extracted evidence from sources.",
+                        status="RUNNING",
+                    )
                 synthesized = await self.synthesize_research_answer(
                     user_request=user_request,
                     research_output=research_step_output,
@@ -902,6 +1013,14 @@ class AgentOrchestrator:
             artifact_info = None
             if isinstance(exec_res.final_output, dict) and "file_name" in exec_res.final_output:
                 artifact_info = exec_res.final_output
+                self._emit_agent_event(
+                    event_type=AgentEventType.DOCUMENT_UPDATED,
+                    task_id=task_id,
+                    correlation_id=correlation_id,
+                    safe_user_message=f"Document '{artifact_info.get('file_name')}' created or updated successfully.",
+                    status="COMPLETED",
+                    metadata={"file_name": artifact_info.get("file_name")},
+                )
             last_tool = None
             if exec_res.completed_steps and exec_res.plan:
                 last_step = exec_res.plan.steps.get(exec_res.completed_steps[-1])
@@ -915,6 +1034,27 @@ class AgentOrchestrator:
                 tool_name=last_tool,
                 tool_result_summary=exec_res.summary,
                 artifact=artifact_info,
+            )
+
+        # Emit terminal task status event
+        if getattr(exec_res, "status", None) == TaskState.COMPLETED:
+            self._emit_agent_event(
+                event_type=AgentEventType.TASK_COMPLETED,
+                task_id=task_id,
+                correlation_id=correlation_id,
+                safe_user_message=exec_res.summary,
+                status="COMPLETED",
+            )
+        elif getattr(exec_res, "status", None) in (TaskState.BLOCKED_PENDING_APPROVAL, TaskState.CANCELLED):
+            pass
+        else:
+            self._emit_agent_event(
+                event_type=AgentEventType.TASK_FAILED,
+                task_id=task_id,
+                correlation_id=correlation_id,
+                safe_user_message=exec_res.error or exec_res.summary or "Task execution failed.",
+                status="FAILED",
+                metadata={"error": exec_res.error},
             )
 
         return exec_res
@@ -939,6 +1079,7 @@ class AgentOrchestrator:
         executor = self.executor or TaskExecutor(
             tool_registry=self.tool_registry,
             planner=planner,
+            event_bus=self.event_bus,
         )
 
         plan = pending.plan
@@ -962,6 +1103,7 @@ class AgentOrchestrator:
             approved_step_id=pending.blocked_step_id,
             context=ctx,
             initial_step_results=pending.step_results,
+            event_bus=self.event_bus,
         )
 
         # Retain pending approval if a subsequent step halted for approval
@@ -984,6 +1126,24 @@ class AgentOrchestrator:
             )
         elif getattr(exec_res, "status", None) == TaskState.COMPLETED:
             self._pending_approval = None
+            correlation_id = ctx.metadata.get("correlation_id") or f"corr_{pending.task_id}"
+            self._emit_agent_event(
+                event_type=AgentEventType.TASK_COMPLETED,
+                task_id=pending.task_id,
+                correlation_id=correlation_id,
+                safe_user_message=exec_res.summary,
+                status="COMPLETED",
+            )
+        elif getattr(exec_res, "status", None) == TaskState.FAILED:
+            correlation_id = ctx.metadata.get("correlation_id") or f"corr_{pending.task_id}"
+            self._emit_agent_event(
+                event_type=AgentEventType.TASK_FAILED,
+                task_id=pending.task_id,
+                correlation_id=correlation_id,
+                safe_user_message=exec_res.error or exec_res.summary or "Resumed task execution failed.",
+                status="FAILED",
+                metadata={"error": exec_res.error},
+            )
 
         return exec_res
 

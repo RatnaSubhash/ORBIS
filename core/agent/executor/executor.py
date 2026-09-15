@@ -21,6 +21,7 @@ from core.agent.models import (
 )
 from core.agent.planner.base import BasePlanner
 from core.agent.planner.validator import PlanValidator
+from core.events.models import AgentEventType
 from core.tools.registry import ToolRegistry
 from core.types import ExecutionContext, RiskLevel
 
@@ -42,12 +43,47 @@ class TaskExecutor:
         max_steps: int = 10,
         max_attempts_per_step: int = 2,
         max_replans: int = 2,
+        event_bus: Optional[Any] = None,
     ) -> None:
         self.tool_registry = tool_registry
         self.planner = planner
         self.max_steps = max_steps
         self.max_attempts_per_step = max_attempts_per_step
         self.max_replans = max_replans
+        self.event_bus = event_bus
+
+    def _emit_step_event(
+        self,
+        bus: Optional[Any],
+        event_type: AgentEventType,
+        task_id: str,
+        correlation_id: str,
+        safe_user_message: str,
+        status: str,
+        step_id: Optional[str] = None,
+        tool_name: Optional[str] = None,
+        risk_level: Optional[RiskLevel] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Publishes a non-blocking step lifecycle event to the event bus if configured."""
+        if bus is None:
+            return
+        try:
+            from core.events.sanitizer import EventSanitizer
+            event = EventSanitizer.create_safe_event(
+                event_type=event_type,
+                task_id=task_id,
+                correlation_id=correlation_id,
+                safe_user_message=safe_user_message,
+                status=status,
+                step_id=step_id,
+                tool_name=tool_name,
+                risk_level=risk_level,
+                metadata=metadata or {},
+            )
+            bus.publish_nowait(event)
+        except Exception as e:
+            logger.warning("Failed to emit step event %s: %s", event_type, e)
 
     def _cascade_block(self, plan: TaskPlan, failed_step_id: str) -> None:
         """Recursively marks all downstream dependent steps as BLOCKED."""
@@ -83,12 +119,14 @@ class TaskExecutor:
         plan: TaskPlan,
         context: Optional[ExecutionContext] = None,
         approval_callback: Optional[ApprovalCallback] = None,
+        event_bus: Optional[Any] = None,
     ) -> AgentExecutionResult:
         """
         Executes a validated TaskPlan to completion or safe failure.
         """
         exec_ctx = context or ExecutionContext()
         task_context = TaskExecutionContext()
+        bus = event_bus if event_bus is not None else self.event_bus
 
         # Validate plan structure before execution
         PlanValidator.validate_plan_or_raise(plan, tool_registry=self.tool_registry)
@@ -112,6 +150,7 @@ class TaskExecutor:
             completed_steps=[],
             step_results={},
             approval_callback=approval_callback,
+            bus=bus,
         )
 
     async def resume(
@@ -121,6 +160,7 @@ class TaskExecutor:
         context: Optional[ExecutionContext] = None,
         approval_callback: Optional[ApprovalCallback] = None,
         initial_step_results: Optional[Dict[str, StepResult]] = None,
+        event_bus: Optional[Any] = None,
     ) -> AgentExecutionResult:
         """
         Resumes execution of a previously blocked TaskPlan from an approved step.
@@ -128,6 +168,7 @@ class TaskExecutor:
         """
         exec_ctx = context or ExecutionContext(task_id=plan.request_id)
         task_context = TaskExecutionContext()
+        bus = event_bus if event_bus is not None else self.event_bus
 
         # Seed task_context with outputs of already completed steps
         completed_step_ids = [
@@ -166,6 +207,7 @@ class TaskExecutor:
             completed_steps=completed_step_ids,
             step_results=dict(initial_step_results or {}),
             approval_callback=scoped_approval,
+            bus=bus,
         )
 
     async def _execute_loop(
@@ -176,6 +218,7 @@ class TaskExecutor:
         completed_steps: List[str],
         step_results: Dict[str, StepResult],
         approval_callback: Optional[ApprovalCallback] = None,
+        bus: Optional[Any] = None,
     ) -> AgentExecutionResult:
         """Core topological execution and verification loop."""
         failed_step: Optional[str] = None
@@ -184,6 +227,7 @@ class TaskExecutor:
 
         total_executed_steps = 0
         execution_limit = min(plan.max_steps, self.max_steps)
+        correlation_id = exec_ctx.metadata.get("correlation_id") or f"corr_{exec_ctx.task_id}"
 
         while True:
             # 1. Update state of PENDING steps based on dependencies
@@ -216,6 +260,18 @@ class TaskExecutor:
                 failure_error = f"Execution exceeded maximum allowed steps ({execution_limit})."
                 ready_step.state = TaskState.BLOCKED
                 self._cascade_block(plan, ready_step.step_id)
+                self._emit_step_event(
+                    bus,
+                    AgentEventType.STEP_FAILED,
+                    task_id=exec_ctx.task_id,
+                    correlation_id=correlation_id,
+                    safe_user_message=failure_error,
+                    status="BLOCKED",
+                    step_id=ready_step.step_id,
+                    tool_name=ready_step.tool_name,
+                    risk_level=ready_step.risk_level,
+                    metadata={"error": failure_error},
+                )
                 break
 
             # 4. Safety Boundary & Authoritative Tool Approval Check (Fix 1 & Phase 7 Dynamic Risk)
@@ -232,13 +288,25 @@ class TaskExecutor:
             )
             if is_approval_needed:
                 ready_step.state = TaskState.BLOCKED_PENDING_APPROVAL
+                approval_msg = ready_step.approval_prompt or f"Execution halted: step '{ready_step.step_id}' ({ready_step.tool_name}) requires approval."
+                self._emit_step_event(
+                    bus,
+                    AgentEventType.APPROVAL_REQUIRED,
+                    task_id=exec_ctx.task_id,
+                    correlation_id=correlation_id,
+                    safe_user_message=approval_msg,
+                    status="BLOCKED_PENDING_APPROVAL",
+                    step_id=ready_step.step_id,
+                    tool_name=ready_step.tool_name,
+                    risk_level=ready_step.risk_level,
+                    metadata={"tool_name": ready_step.tool_name, "parameters": ready_step.parameters},
+                )
                 approved = await self._handle_approval(ready_step, approval_callback)
 
                 if approved:
                     ready_step.state = TaskState.READY
                 else:
                     failed_step = ready_step.step_id
-                    approval_msg = ready_step.approval_prompt or f"Execution halted: step '{ready_step.step_id}' ({ready_step.tool_name}) requires approval."
                     failure_error = ready_step.approval_prompt or f"Step '{ready_step.step_id}' requires explicit approval before execution."
                     self._cascade_block(plan, ready_step.step_id)
                     return AgentExecutionResult(
@@ -260,6 +328,19 @@ class TaskExecutor:
             total_executed_steps += 1
             t_start = time.perf_counter()
 
+            self._emit_step_event(
+                bus,
+                AgentEventType.STEP_STARTED,
+                task_id=exec_ctx.task_id,
+                correlation_id=correlation_id,
+                safe_user_message=f"Starting step '{ready_step.step_id}': {ready_step.title or ready_step.tool_name}.",
+                status="RUNNING",
+                step_id=ready_step.step_id,
+                tool_name=ready_step.tool_name,
+                risk_level=ready_step.risk_level,
+                metadata={"title": ready_step.title, "attempt": ready_step.attempts},
+            )
+
             resolved_params = task_context.resolve_bindings(ready_step)
 
             try:
@@ -277,6 +358,18 @@ class TaskExecutor:
                 ready_step.state = TaskState.FAILED
                 failed_step = ready_step.step_id
                 failure_error = step_res.error
+                self._emit_step_event(
+                    bus,
+                    AgentEventType.STEP_FAILED,
+                    task_id=exec_ctx.task_id,
+                    correlation_id=correlation_id,
+                    safe_user_message=f"Step '{ready_step.step_id}' parameter validation failed.",
+                    status="FAILED",
+                    step_id=ready_step.step_id,
+                    tool_name=ready_step.tool_name,
+                    risk_level=ready_step.risk_level,
+                    metadata={"error": step_res.error},
+                )
                 self._cascade_block(plan, ready_step.step_id)
                 break
 
@@ -306,6 +399,18 @@ class TaskExecutor:
             step_results[ready_step.step_id] = step_res
 
             # 6. Step Verification (Mandatory contract)
+            self._emit_step_event(
+                bus,
+                AgentEventType.VERIFICATION_STARTED,
+                task_id=exec_ctx.task_id,
+                correlation_id=correlation_id,
+                safe_user_message=f"Verifying step '{ready_step.step_id}' execution.",
+                status="VERIFYING",
+                step_id=ready_step.step_id,
+                tool_name=ready_step.tool_name,
+                risk_level=ready_step.risk_level,
+            )
+
             if step_res.success:
                 try:
                     ver_report = await tool.verify(validated_params, tool_result, exec_ctx)
@@ -332,11 +437,36 @@ class TaskExecutor:
 
             verification_reports[ready_step.step_id] = step_ver
 
+            self._emit_step_event(
+                bus,
+                AgentEventType.VERIFICATION_COMPLETED,
+                task_id=exec_ctx.task_id,
+                correlation_id=correlation_id,
+                safe_user_message=f"Verification for step '{ready_step.step_id}' completed (verified={step_ver.verified}).",
+                status="VERIFIED" if step_ver.verified else "VERIFICATION_FAILED",
+                step_id=ready_step.step_id,
+                tool_name=ready_step.tool_name,
+                risk_level=ready_step.risk_level,
+                metadata={"verified": step_ver.verified, "details": step_ver.details},
+            )
+
             # 7. Evaluate Execution & Verification Outcome
             if step_res.success and step_ver.verified:
                 ready_step.state = TaskState.COMPLETED
                 completed_steps.append(ready_step.step_id)
                 task_context.store_output(ready_step.step_id, step_res.output, ready_step.output_key)
+                self._emit_step_event(
+                    bus,
+                    AgentEventType.STEP_COMPLETED,
+                    task_id=exec_ctx.task_id,
+                    correlation_id=correlation_id,
+                    safe_user_message=f"Step '{ready_step.step_id}' completed successfully.",
+                    status="COMPLETED",
+                    step_id=ready_step.step_id,
+                    tool_name=ready_step.tool_name,
+                    risk_level=ready_step.risk_level,
+                    metadata={"execution_time_ms": step_res.execution_time_ms},
+                )
             else:
                 # Step failed execution or verification
                 if ready_step.attempts < ready_step.max_attempts:
@@ -347,6 +477,19 @@ class TaskExecutor:
                 ready_step.state = TaskState.FAILED
                 failed_step = ready_step.step_id
                 failure_error = step_res.error or step_ver.details
+
+                self._emit_step_event(
+                    bus,
+                    AgentEventType.STEP_FAILED,
+                    task_id=exec_ctx.task_id,
+                    correlation_id=correlation_id,
+                    safe_user_message=f"Step '{ready_step.step_id}' failed: {failure_error}.",
+                    status="FAILED",
+                    step_id=ready_step.step_id,
+                    tool_name=ready_step.tool_name,
+                    risk_level=ready_step.risk_level,
+                    metadata={"error": failure_error},
+                )
 
                 # Attempt Controlled Replanning if configured (Refinement 3 & Fix 2)
                 if self.planner and plan.replan_count < plan.max_replans:
