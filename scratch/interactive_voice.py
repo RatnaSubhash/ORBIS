@@ -52,8 +52,20 @@ async def interactive_voice_session():
     continuity_svc = ContinuityService(db=db)
     intent_eng = IntentContinuityEngine(db=db, llm_provider=real_llm)
 
+    # 1.1 Start Passive Workspace Observer so workspace events and sessions are recorded
+    from core.observation.service import WorkspaceObservationService
+    from core.observation.windows import WindowsWorkspaceObserver
+    observer = WindowsWorkspaceObserver()
+    obs_service = WorkspaceObservationService(observer=observer, db_manager=db, polling_interval=2.0)
+    try:
+        await obs_service.start()
+        print("      Background Workspace Observation Service started.")
+    except Exception as e:
+        print(f"      [Warning] Could not start workspace observer: {e}")
+
     # 2. Setup Authoritative Tool Registry with all capabilities (WebResearch, File, Terminal, etc.)
     tools = create_default_tool_registry(db=db)
+    tools._tools["desktop"] = DesktopTool(observer=observer)
 
     # 3. Setup Hardware Providers (strictly real hardware, no mocks)
     print("\n[1/3] Initializing physical microphone capture (sounddevice)...")
@@ -137,50 +149,54 @@ async def interactive_voice_session():
 
     turn_count = 0
 
-    while True:
-        turn_count += 1
-        prompt = input(f"\n[Turn {turn_count}] Press [Enter] to speak (or type query, 'q' to exit): ").strip()
-        if prompt.lower() in ("q", "quit", "exit"):
-            print("\nExiting interactive voice interface.")
-            await tts_provider.speak("Goodbye.")
-            break
+    try:
+        while True:
+            turn_count += 1
+            prompt = input(f"\n[Turn {turn_count}] Press [Enter] to speak (or type query, 'q' to exit): ").strip()
+            if prompt.lower() in ("q", "quit", "exit"):
+                print("\nExiting interactive voice interface.")
+                await tts_provider.speak("Goodbye.")
+                break
 
-        if prompt:
-            # Typed spoken input mode (passes through full normalizer, orchestrator, TTS pipeline)
-            print(f">>> [SPOKEN INPUT] \"{prompt}\"")
-            interleaved_stt.queue_text(prompt)
-            audio_buf = AudioBuffer(data=b"\x00" * 32000, sample_rate=16000, channels=1)
-        else:
-            # Start Push-to-Talk Recording
-            print("\n>>> [RECORDING ACTIVE] Speak now...")
-            voice_service.start_listening()
+            if prompt:
+                # Typed spoken input mode (passes through full normalizer, orchestrator, TTS pipeline)
+                print(f">>> [SPOKEN INPUT] \"{prompt}\"")
+                interleaved_stt.queue_text(prompt)
+                audio_buf = AudioBuffer(data=b"\x00" * 32000, sample_rate=16000, channels=1)
+            else:
+                # Start Push-to-Talk Recording
+                print("\n>>> [RECORDING ACTIVE] Speak now...")
+                voice_service.start_listening()
 
-            # Wait for user to finish speaking
-            input(">>> Press [Enter] when finished speaking...")
+                # Wait for user to finish speaking
+                input(">>> Press [Enter] when finished speaking...")
 
-            # Stop Push-to-Talk Recording
-            audio_buf: AudioBuffer = voice_service.stop_listening()
-            duration = audio_buf.duration_seconds
-            print(f">>> [RECORDING STOPPED] Captured {duration:.2f}s of audio ({len(audio_buf.data)} bytes in memory).")
+                # Stop Push-to-Talk Recording
+                audio_buf: AudioBuffer = voice_service.stop_listening()
+                duration = audio_buf.duration_seconds
+                print(f">>> [RECORDING STOPPED] Captured {duration:.2f}s of audio ({len(audio_buf.data)} bytes in memory).")
 
-            if audio_buf.is_empty or duration < 0.2:
-                print("[Warning] No audible speech captured. Please hold PTT and speak clearly.")
-                continue
+                if audio_buf.is_empty or duration < 0.2:
+                    print("[Warning] No audible speech captured. Please hold PTT and speak clearly.")
+                    continue
 
-        # Process through full ORBIS Voice Pipeline
-        print(">>> [PROCESSING] Running voice pipeline...")
-        result = await voice_service.process_spoken_request(audio_buf, speak_response=True)
+            # Process through full ORBIS Voice Pipeline
+            print(">>> [PROCESSING] Running voice pipeline...")
+            result = await voice_service.process_spoken_request(audio_buf, speak_response=True)
 
-        print("\n" + "=" * 50)
-        print(f"  Raw Transcript:  \"{result.raw_transcript}\"")
-        print(f"  Normalized:      \"{result.normalized_query}\"")
-        print(f"  Agent Response:  \"{result.agent_response_summary}\"")
-        print("=" * 50)
+            print("\n" + "=" * 50)
+            print(f"  Raw Transcript:  \"{result.raw_transcript}\"")
+            print(f"  Normalized:      \"{result.normalized_query}\"")
+            print(f"  Agent Response:  \"{result.agent_response_summary}\"")
+            print("=" * 50)
 
-        # State guidance when an approval is pending for the next voice turn
-        if result.requires_approval:
-            print(f"\n[APPROVAL PENDING] {result.approval_prompt}")
-            print(">>> Press [Enter] on the next turn to speak your confirmation (e.g. 'Yes, overwrite it' or 'No, cancel').")
+            # State guidance when an approval is pending for the next voice turn
+            if result.requires_approval:
+                print(f"\n[APPROVAL PENDING] {result.approval_prompt}")
+                print(">>> Press [Enter] on the next turn to speak your confirmation (e.g. 'Yes, overwrite it' or 'No, cancel').")
+    finally:
+        await obs_service.stop()
+        print("      Background Workspace Observation Service stopped cleanly.")
 
 
 if __name__ == "__main__":

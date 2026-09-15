@@ -208,20 +208,42 @@ class HierarchicalPlanner(BasePlanner):
         if is_ambiguous and clarification_msg:
             return self._plan_clarification_task(request, tool_registry, clarification_msg)
 
-        # 2. Check for Research + Document Creation Pattern (Phase 8 Multi-Step Pipeline)
+        # Document creation intent signals
+        has_creation_verb = any(
+            v in lower_prompt
+            for v in ("create", "write", "generate", "make", "save", "produce", "compile", "draft", "prepare")
+        )
+        has_doc_target = any(
+            t in lower_prompt
+            for t in (
+                "report", "document", "readme", "markdown", ".md", ".txt", "text file",
+                "file", "study notes", "notes", "recommendations", "recommendation"
+            )
+        )
+        has_doc_creation_intent = has_creation_verb and has_doc_target
+
+        has_research_signals = any(
+            r in lower_prompt
+            for r in (
+                "search", "research", "find online", "lookup online", "lookup", "explore",
+                "investigate", "compare", "find three", "find 3", "find some", "find good",
+                "good computer network", "good project ideas"
+            )
+        ) or bool(re.search(r"\bfind\s+(?:\w+\s+)*(?:ideas|options|projects|topics|information)\b", lower_prompt))
+
+        # 2. Check for Research + Document Creation Pipeline (Phase 8 Multi-Step Pipeline)
         if (
-            ("search" in lower_prompt or "research" in lower_prompt or "find online" in lower_prompt)
-            and ("report" in lower_prompt or "document" in lower_prompt or "readme" in lower_prompt or "markdown" in lower_prompt or ".md" in lower_prompt or ".txt" in lower_prompt)
+            has_doc_creation_intent
+            and has_research_signals
             and tool_registry.get("web_research") is not None
             and tool_registry.get("content_generator") is not None
             and tool_registry.get("document") is not None
         ):
             return self._plan_research_and_document_task(request, tool_registry)
 
-        # 3. Check for Direct Document Creation Pattern (Phase 8 Document Generation)
+        # 3. Check for Direct Document Creation Pipeline (Phase 8 Document Generation)
         if (
-            ("create" in lower_prompt or "write" in lower_prompt or "generate" in lower_prompt or "make" in lower_prompt or "turn" in lower_prompt)
-            and ("report" in lower_prompt or "document" in lower_prompt or "readme" in lower_prompt or "markdown" in lower_prompt or ".md" in lower_prompt or ".txt" in lower_prompt)
+            has_doc_creation_intent
             and tool_registry.get("content_generator") is not None
             and tool_registry.get("document") is not None
         ):
@@ -255,28 +277,40 @@ class HierarchicalPlanner(BasePlanner):
         ):
             return self._plan_web_research_task(request, tool_registry)
 
-        # 3. Check for Terminal Command Pattern (Phase 7)
+        # 5. Check for Terminal Command Pattern (Phase 7)
         if (
             ("git" in lower_prompt or "pytest" in lower_prompt or "terminal" in lower_prompt or "run test" in lower_prompt or "run the test" in lower_prompt)
             and tool_registry.get("terminal") is not None
         ):
             return self._plan_terminal_task(request, tool_registry)
 
-        # 4. Check for File Locate + Read + Summarize Pattern
+        # 6. Check for Workspace File Listing Pattern (Issue B)
+        if (
+            ("file" in lower_prompt or "directory" in lower_prompt or "folder" in lower_prompt)
+            and ("check" in lower_prompt or "list" in lower_prompt or "show" in lower_prompt or "see" in lower_prompt or "view" in lower_prompt or "what" in lower_prompt)
+            and ("workspace" in lower_prompt or "project" in lower_prompt or "repo" in lower_prompt or "here" in lower_prompt or "root" in lower_prompt)
+            and tool_registry.get("file") is not None
+        ):
+            return self._plan_workspace_file_list(request, tool_registry)
+
+        # 7. Check for File Locate + Read + Summarize Pattern
+        # Strictly for reading/summarizing an existing file, never when creating a file
         if (
             ("readme" in lower_prompt or "file" in lower_prompt or "summary" in lower_prompt)
             and ("find" in lower_prompt or "locate" in lower_prompt or "read" in lower_prompt or "prepare" in lower_prompt)
+            and not has_creation_verb
+            and tool_registry.get("file") is not None
         ):
             return self._plan_file_summary_hierarchy(request, tool_registry)
 
-        # 5. Check for Desktop Inspection Pattern
+        # 8. Check for Desktop Inspection Pattern (Issue C)
         if (
-            ("desktop" in lower_prompt or "window" in lower_prompt or "process" in lower_prompt)
+            ("desktop" in lower_prompt or "window" in lower_prompt or "process" in lower_prompt or "application" in lower_prompt or "app am i" in lower_prompt or "what am i using" in lower_prompt or "active window" in lower_prompt)
             and (tool_registry.get("desktop") is not None or tool_registry.get("desktop_tool") is not None)
         ):
             return self._plan_desktop_inspection(request, tool_registry)
 
-        # 6. Check for Echo / Message Pattern
+        # 9. Check for Echo / Message Pattern
         if "echo" in lower_prompt or "say" in lower_prompt:
             return self._plan_echo_task(request, tool_registry)
 
@@ -483,11 +517,44 @@ class HierarchicalPlanner(BasePlanner):
         PlanValidator.validate_plan_or_raise(plan, tool_registry=tool_registry)
         return plan
 
+    def _plan_workspace_file_list(
+        self, request: AgentRequest, tool_registry: ToolRegistry
+    ) -> TaskPlan:
+        """Constructs a single-step plan to list files in the workspace root."""
+        file_tool = tool_registry.get_or_raise("file")
+        step_id = "step_list_workspace_files"
+        step = TaskStep(
+            step_id=step_id,
+            title="List Workspace Files",
+            description="Inspects directory contents of authorized workspace root.",
+            tool_name=file_tool.name,
+            parameters={"action": "list_directory", "path": "."},
+            dependencies=[],
+            state=TaskState.READY,
+            risk_level=file_tool.risk_level,
+        )
+        plan = TaskPlan(
+            request_id=request.request_id,
+            user_prompt=request.user_prompt,
+            task_type=TaskType.SINGLE_STEP,
+            root_step_ids=[step_id],
+            steps={step_id: step},
+        )
+        PlanValidator.validate_plan_or_raise(plan, tool_registry=tool_registry)
+        return plan
+
     def _plan_file_summary_hierarchy(
         self, request: AgentRequest, tool_registry: ToolRegistry
     ) -> TaskPlan:
         """Constructs a parent-child hierarchical plan: locate -> read -> summarize."""
-        target_path = "README.md" if "readme" in request.user_prompt.lower() else "sample.txt"
+        # Extract explicit filename from prompt, or default to README.md
+        file_match = re.search(r"\b[\w\-./\\]+\.(?:md|txt|py|json|toml|yaml|log)\b", request.user_prompt, re.IGNORECASE)
+        if file_match:
+            target_path = file_match.group(0).strip("'\"")
+        elif "readme" in request.user_prompt.lower():
+            target_path = "README.md"
+        else:
+            target_path = "README.md"
 
         file_tool = tool_registry.get_or_raise("file")
         echo_tool = tool_registry.get("echo") or tool_registry.get("echo_tool") or tool_registry.get_or_raise("echo")
@@ -577,7 +644,8 @@ class HierarchicalPlanner(BasePlanner):
             or tool_registry.get("desktop_tool")
             or tool_registry.get_or_raise("desktop_tool")
         )
-        action = "inspect_running_processes" if "process" in request.user_prompt.lower() else "inspect_active_window"
+        lower = request.user_prompt.lower()
+        action = "capture_snapshot" if "process" in lower or "snapshot" in lower else "get_active_window"
         step_id = "step_inspect_desktop"
 
         step = TaskStep(
@@ -880,18 +948,24 @@ class HierarchicalPlanner(BasePlanner):
         lower = prompt.lower()
 
         # Determine format
-        if ".txt" in lower or "plain text" in lower or "text file" in lower or "text document" in lower:
+        if any(k in lower for k in (".txt", "plain text", "text file", "text document")):
             doc_format = "text"
             default_ext = ".txt"
         else:
             doc_format = "markdown"
             default_ext = ".md"
 
-        # Determine content type
+        # Determine content type and default name
         if "readme" in lower:
             content_type = "readme"
             default_name = "README.md"
-        elif "summary" in lower:
+        elif "recommend" in lower or "recommendation" in lower or "recommendations" in lower:
+            content_type = "document"
+            default_name = f"recommendations{default_ext}"
+        elif "study notes" in lower or "notes" in lower:
+            content_type = "document"
+            default_name = f"study_notes{default_ext}"
+        elif "summary" in lower or "summarize" in lower:
             content_type = "summary"
             default_name = f"summary{default_ext}"
         elif "report" in lower:
@@ -902,7 +976,7 @@ class HierarchicalPlanner(BasePlanner):
             default_name = f"document{default_ext}"
 
         # Look for explicit filename in prompt
-        match = re.search(r"[\w\-./\\]+\.(?:md|txt)", prompt, re.IGNORECASE)
+        match = re.search(r"\b[\w\-./\\]+\.(?:md|txt)\b", prompt, re.IGNORECASE)
         if match:
             filename = match.group(0).strip("'\"")
         else:
@@ -910,92 +984,28 @@ class HierarchicalPlanner(BasePlanner):
 
         # Extract clean topic
         clean_topic = prompt
-        prefixes = sorted(
-            [
-                "research the web for and create a report about",
-                "research the web for and create a report on",
-                "research the web for",
-                "research and create a markdown report about",
-                "research and create a markdown report on",
-                "research and create a markdown report",
-                "research and create a report about",
-                "research and create a report on",
-                "research and create a report",
-                "research and create a short summary about",
-                "research and create a short summary on",
-                "research and create a short summary",
-                "research and create a summary about",
-                "research and create a summary on",
-                "research and create a summary",
-                "research and create a document about",
-                "research and create a document on",
-                "research and create a document",
-                "research and write a report on",
-                "research and write a report about",
-                "research and write a report",
-                "research and write a document about",
-                "research and write a document",
-                "research about",
-                "research on",
-                "research",
-                "create a report about",
-                "create a report on",
-                "create a report for",
-                "create a report",
-                "create a summary from",
-                "create a summary of",
-                "create a summary about",
-                "create a summary",
-                "create a short summary of",
-                "create a short summary about",
-                "create a short summary for",
-                "create a short summary",
-                "create a project report using",
-                "create a project report about",
-                "create a project report",
-                "create a readme for",
-                "create a readme",
-                "create a markdown file called",
-                "create a markdown file named",
-                "create a markdown document from",
-                "create a markdown document about",
-                "create a markdown file about",
-                "create a markdown file from",
-                "create a markdown document",
-                "create a markdown file",
-                "create a text file about",
-                "create a text document from",
-                "create a text document about",
-                "create a text document",
-                "create a text file",
-                "create a document from",
-                "create a document about",
-                "create a document",
-                "turn this information into a professional document",
-                "turn this information into a document",
-                "write a report about",
-                "write a report on",
-                "write a report",
-                "write a document about",
-                "write a document",
-                "write a readme for",
-                "write a readme",
-            ],
-            key=len,
-            reverse=True,
+
+        # 1. Strip trailing document creation clauses preceded by conjunction/punctuation
+        clean_topic = re.sub(
+            r"(?i)(?:,\s*|\s+and\s+|\s*;\s*)(?:create|write|generate|make|save)\s+(?:a\s+)?(?:[\w\-]+\s+)?(?:file|document|report|readme|markdown|notes|study\s+notes|recommendations|text).*$",
+            "",
+            clean_topic,
         )
+        # 2. Strip trailing summarization clauses like ", summarize it" or "and summarize it"
+        clean_topic = re.sub(r"(?i)(?:,\s*|\s+and\s+|\s*;\s*)summarize\s+it.*$", "", clean_topic)
 
-        for prefix in prefixes:
-            m = re.match(r"(?i)^" + re.escape(prefix) + r"\b", prompt)
-            if m:
-                clean_topic = prompt[m.end():].strip()
-                break
-
-
-        # Remove trailing filename specifications or trailing directives
-        clean_topic = re.sub(r"(?i)\s+(?:and\s+save\s+to|called|named|to|in)\s+[\w\-./\\]+\.(?:md|txt)", "", clean_topic)
-        clean_topic = re.sub(r"(?i)\s+and\s+create\s+(?:a\s+)?(?:report|document|readme|markdown|file).*", "", clean_topic)
-        clean_topic = clean_topic.strip(" .?!'\"") or "ORBIS Topic"
+        # 3. Strip leading action verbs
+        clean_topic = re.sub(
+            r"(?i)^(?:find|search\s+(?:the\s+web\s+)?for|research|explore|investigate|lookup)\s+",
+            "",
+            clean_topic,
+        )
+        clean_topic = re.sub(
+            r"(?i)^(?:create|write|generate|make)\s+(?:a\s+)?(?:readme\s+for|report\s+on|report\s+about|document\s+about|document\s+for|notes\s+on|study\s+notes\s+on)\s+",
+            "",
+            clean_topic,
+        )
+        clean_topic = clean_topic.strip(" .,;?!'\"") or "ORBIS Topic"
 
         return clean_topic, content_type, doc_format, filename
 
@@ -1009,14 +1019,18 @@ class HierarchicalPlanner(BasePlanner):
 
         topic, content_type, doc_format, filename = self._extract_document_metadata(request.user_prompt)
 
+        # Clean search query by removing comparison directives if present
+        search_query = re.sub(r"(?i)[,;]?\s*(?:and\s+)?compare\s+them.*$", "", topic).strip()
+        search_query = search_query or topic
+
         # Step 1: Web Research
         step_search_id = "step_web_research"
         step_search = TaskStep(
             step_id=step_search_id,
-            title=f"Web research on '{topic}'",
+            title=f"Web research on '{search_query}'",
             description="Searches web and extracts relevant readable text.",
             tool_name=web_tool.name,
-            parameters={"action": "research", "query": topic},
+            parameters={"action": "research", "query": search_query},
             output_key="research_output",
             dependencies=[],
             state=TaskState.READY,

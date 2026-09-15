@@ -99,11 +99,16 @@ class DocumentTool(BaseTool):
         if raw_path.startswith("//") or raw_path.startswith(r"\\"):
             raise ValueError(f"UNC paths are strictly prohibited: '{raw_path}'.")
 
-        candidate = Path(raw_path)
-        if not candidate.is_absolute():
-            resolved = (self.allowed_root / candidate).resolve()
+        norm_path = raw_path.strip()
+        if norm_path in ("/", "\\", ".", ""):
+            resolved = self.allowed_root
         else:
-            resolved = candidate.resolve()
+            candidate = Path(norm_path)
+            if not candidate.is_absolute():
+                rel_parts = norm_path.lstrip("/\\")
+                resolved = (self.allowed_root / rel_parts).resolve()
+            else:
+                resolved = candidate.resolve()
 
         # 2. Containment boundary check
         if resolved != self.allowed_root and self.allowed_root not in resolved.parents:

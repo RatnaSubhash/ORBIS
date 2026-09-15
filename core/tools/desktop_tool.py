@@ -15,7 +15,7 @@ from core.types import ExecutionContext, RiskLevel, ToolResult, VerificationRepo
 
 class DesktopActionParameters(BaseModel):
     """Parameters for DesktopTool actions."""
-    action: Literal["get_active_window", "capture_snapshot"] = Field(
+    action: Literal["get_active_window", "capture_snapshot", "inspect_active_window"] = Field(
         default="get_active_window",
         description="The read-only desktop inspection action to execute.",
     )
@@ -44,7 +44,7 @@ class DesktopTool(BaseTool):
             params = self.validate_parameters(params.model_dump())
 
         try:
-            if params.action == "get_active_window":
+            if params.action in ("get_active_window", "inspect_active_window"):
                 window = self.observer.get_active_window()
                 output = window.model_dump(mode="json") if window else None
             elif params.action == "capture_snapshot":

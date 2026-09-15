@@ -132,11 +132,16 @@ class FileTool(BaseTool):
         if raw_path.startswith("//") or raw_path.startswith(r"\\"):
             raise ValueError(f"UNC network paths are prohibited: '{raw_path}'.")
 
-        candidate = Path(raw_path)
-        if not candidate.is_absolute():
-            resolved = (self.allowed_root / candidate).resolve()
+        norm_path = raw_path.strip()
+        if norm_path in ("/", "\\", ".", ""):
+            resolved = self.allowed_root
         else:
-            resolved = candidate.resolve()
+            candidate = Path(norm_path)
+            if not candidate.is_absolute():
+                rel_parts = norm_path.lstrip("/\\")
+                resolved = (self.allowed_root / rel_parts).resolve()
+            else:
+                resolved = candidate.resolve()
 
         # Enforce canonical path boundary containment
         try:
@@ -210,6 +215,10 @@ class FileTool(BaseTool):
                     for entry in it:
                         if len(entries) >= params.max_entries:
                             break
+                        # Filter out protected paths using the existing is_protected_path policy
+                        entry_path = target / entry.name
+                        if self.is_protected_path(entry_path):
+                            continue
                         try:
                             is_file = entry.is_file()
                             is_dir = entry.is_dir()

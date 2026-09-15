@@ -13,8 +13,17 @@ import re
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 from pydantic import ValidationError
 
+from core.agent.conversation import ConversationContext
 from core.agent.llm.base import BaseLLMProvider
-from core.agent.models import PendingApproval, TaskPlan, TaskState, TaskStep, TaskType
+from core.agent.models import (
+    AgentExecutionResult,
+    AgentRequest,
+    PendingApproval,
+    TaskPlan,
+    TaskState,
+    TaskStep,
+    TaskType,
+)
 from core.memory.db import DatabaseManager
 from core.tools.base import BaseTool
 from core.tools.registry import ToolRegistry
@@ -30,6 +39,66 @@ from core.types import (
 )
 
 logger = logging.getLogger("orbis.agent.orchestrator")
+
+
+def format_useful_tool_output(tool_name: str, output: Any, step_params: Optional[dict] = None) -> Optional[str]:
+    """
+    Synthesizes useful human-readable text from structured tool results
+    so that users receive informative answers rather than generic success summaries.
+    """
+    # 1. Desktop tool inspection
+    if tool_name in ("desktop", "desktop_tool"):
+        if not output:
+            return "No active application window is currently detected in the foreground."
+        if isinstance(output, dict):
+            proc = output.get("process_name")
+            if proc:
+                clean_app = re.sub(r"\.exe$", "", proc, flags=re.IGNORECASE)
+                title = output.get("title")
+                if title:
+                    return f"You are currently using {clean_app} ('{title}')."
+                return f"You are currently using {clean_app}."
+            if output.get("processes"):
+                return f"Currently running {len(output['processes'])} processes."
+            return "No active application window is currently detected in the foreground."
+
+    if not output:
+        return None
+
+    # 2. File tool directory listing or read
+    if tool_name == "file" and isinstance(output, dict):
+        if "entries" in output and "path" in output:
+            entries = output.get("entries", [])
+            names = [e["name"] for e in entries if isinstance(e, dict) and "name" in e][:6]
+            count = output.get("total_entries_sampled", len(entries))
+            if names:
+                suffix = f", and {count - len(names)} more" if count > len(names) else ""
+                return f"Found {count} files in workspace: {', '.join(names)}{suffix}."
+            return "Workspace directory is empty."
+        if "content" in output:
+            content = str(output.get("content", "")).strip()
+            return content if len(content) <= 300 else content[:300] + "..."
+        if "exists" in output:
+            p = output.get("path", "file")
+            return f"{p} exists." if output.get("exists") else f"{p} does not exist."
+
+    # 3. Document tool persistence
+    if tool_name == "document" and isinstance(output, dict):
+        fname = output.get("file_name") or output.get("file_path")
+        if fname:
+            action = "updated" if output.get("overwritten") else "created"
+            return f"Successfully {action} document '{fname}'."
+
+    # 4. Echo tool
+    if tool_name == "echo" and isinstance(output, dict):
+        if output.get("message"):
+            return str(output["message"])
+
+    # 5. Continuity
+    if isinstance(output, dict) and output.get("grounded_summary"):
+        return str(output["grounded_summary"])
+
+    return None
 
 
 EventListener = Callable[[StatusEvent], Awaitable[None]]
@@ -185,6 +254,7 @@ class AgentOrchestrator:
         planner: Optional[Any] = None,
         executor: Optional[Any] = None,
         voice_service: Optional[Any] = None,
+        conversation_context: Optional[ConversationContext] = None,
     ) -> None:
         self.llm_provider = llm_provider
         self.tool_registry = tool_registry
@@ -195,6 +265,7 @@ class AgentOrchestrator:
         self.planner = planner
         self.executor = executor
         self.voice_service = voice_service
+        self.conversation_context: ConversationContext = conversation_context or ConversationContext()
         self._pending_approval: Optional[PendingApproval] = None
         self._listeners: List[EventListener] = []
 
@@ -537,10 +608,27 @@ class AgentOrchestrator:
             except Exception as e:
                 logger.warning("Failed to record audit log: %s", e)
 
+        user_summary = exec_res.summary
+        if user_summary.startswith("Multi-step task completed successfully"):
+            friendly = format_useful_tool_output(tool_name, tool_result.output, tool_call.parameters)
+            if friendly:
+                user_summary = friendly
+
+        # Record conversational turn
+        artifact_info = tool_result.output if tool_name == "document" and isinstance(tool_result.output, dict) else None
+        self.conversation_context.record_turn(
+            user_query=user_request,
+            resolved_query=user_request,
+            response_text=user_summary,
+            tool_name=tool_name,
+            tool_result_summary=user_summary,
+            artifact=artifact_info,
+        )
+
         await self._emit_event(
             task_id=task_id,
             event_type=StatusEventType.COMPLETED,
-            summary=exec_res.summary,
+            summary=user_summary,
             details={"output": tool_result.output},
             risk_level=risk,
         )
@@ -548,7 +636,7 @@ class AgentOrchestrator:
         return AgentResponse(
             task_id=task_id,
             status=StatusEventType.COMPLETED,
-            summary=exec_res.summary,
+            summary=user_summary,
             tool_call=tool_call,
             tool_result=tool_result,
             verification=verification,
@@ -715,10 +803,29 @@ class AgentOrchestrator:
             planner=planner,
         )
 
+        # Resolve conversational continuity (pronouns, references, topic return)
+        resolution = self.conversation_context.resolve_query(user_request)
+        if resolution.is_ambiguous and resolution.clarification_message:
+            plan = TaskPlan(
+                request_id=context.task_id if context else "ambiguous",
+                user_prompt=user_request,
+                task_type=TaskType.SINGLE_STEP,
+            )
+            return AgentExecutionResult(
+                task_id=context.task_id if context else "ambiguous",
+                request=user_request,
+                status=TaskState.COMPLETED,
+                summary=resolution.clarification_message,
+                plan=plan,
+                final_output=resolution.clarification_message,
+            )
+
+        effective_request = resolution.resolved_query
+
         if plan is None:
             request = AgentRequest(
                 request_id=ctx.task_id,
-                user_prompt=user_request,
+                user_prompt=effective_request,
                 context=ctx,
             )
 
@@ -778,6 +885,37 @@ class AgentOrchestrator:
                     else:
                         exec_res.final_output = synthesized
                     exec_res.summary = synthesized
+
+        # Format useful summary for 1-step tasks and record turn in conversation context
+        if getattr(exec_res, "status", None) == TaskState.COMPLETED:
+            if exec_res.summary.startswith("Multi-step task completed successfully") and exec_res.plan and len(exec_res.plan.steps) == 1:
+                last_step_id = exec_res.completed_steps[-1] if exec_res.completed_steps else None
+                if last_step_id:
+                    step = exec_res.plan.steps.get(last_step_id)
+                    if step:
+                        friendly = format_useful_tool_output(step.tool_name, exec_res.final_output, step.parameters)
+                        if friendly:
+                            exec_res.summary = friendly
+                            if not exec_res.final_output:
+                                exec_res.final_output = friendly
+
+            artifact_info = None
+            if isinstance(exec_res.final_output, dict) and "file_name" in exec_res.final_output:
+                artifact_info = exec_res.final_output
+            last_tool = None
+            if exec_res.completed_steps and exec_res.plan:
+                last_step = exec_res.plan.steps.get(exec_res.completed_steps[-1])
+                if last_step:
+                    last_tool = last_step.tool_name
+
+            self.conversation_context.record_turn(
+                user_query=user_request,
+                resolved_query=effective_request,
+                response_text=exec_res.summary,
+                tool_name=last_tool,
+                tool_result_summary=exec_res.summary,
+                artifact=artifact_info,
+            )
 
         return exec_res
 

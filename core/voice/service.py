@@ -6,6 +6,7 @@ and TTS Vocalization into a cohesive Push-to-Talk voice interface.
 
 import asyncio
 import logging
+import re
 from typing import Any, Callable, Optional, Tuple
 
 from core.agent.orchestrator import AgentOrchestrator
@@ -61,6 +62,25 @@ def extract_spoken_response(agent_exec_res: Any) -> str:
             if isinstance(val, str) and val.strip():
                 candidate_text = val.strip()
                 break
+
+        # Check for structured active desktop window output
+        if candidate_text is None and "process_name" in final_output:
+            proc = final_output["process_name"]
+            clean_app = re.sub(r"\.exe$", "", proc, flags=re.IGNORECASE) if proc else "Unknown Application"
+            candidate_text = f"You are currently using {clean_app}."
+
+        # Check for directory listing output
+        elif candidate_text is None and "entries" in final_output and "path" in final_output:
+            entries = final_output.get("entries", [])
+            names = [e["name"] for e in entries if isinstance(e, dict) and "name" in e][:5]
+            count = final_output.get("total_entries_sampled", len(entries))
+            candidate_text = f"Found {count} files in your workspace, including {', '.join(names)}." if names else "Your workspace directory is empty."
+
+        # Check for document persistence output
+        elif candidate_text is None and "file_name" in final_output and "size_bytes" in final_output:
+            fname = final_output["file_name"]
+            verb = "updated" if final_output.get("overwritten") else "created"
+            candidate_text = f"Successfully {verb} document '{fname}'."
 
     # 3. Fallback to execution summary if no useful final_output text found
     if not candidate_text:
