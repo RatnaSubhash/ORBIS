@@ -9,8 +9,12 @@ from typing import Any, Dict, List, Optional, Set, Union
 from datetime import datetime, timezone
 
 from core.events.models import AgentEvent, AgentEventType
-from core.tools.secret_redaction import redact_secrets
 from core.types import RiskLevel
+
+
+def _apply_secret_redaction(text: str) -> str:
+    from core.tools.secret_redaction import redact_secrets
+    return redact_secrets(text)
 
 # Keys that must be completely dropped from event metadata (internal/private telemetry)
 DROPPED_METADATA_KEYS: Set[str] = {
@@ -84,7 +88,7 @@ class EventSanitizer:
         text = str(message).strip()
 
         # 1. Apply authoritative ORBIS secret redaction
-        text = redact_secrets(text)
+        text = _apply_secret_redaction(text)
 
         # 2. Mask any key=val or key: val credential assignments
         def _mask_assignment(match: re.Match) -> str:
@@ -147,7 +151,7 @@ class EventSanitizer:
 
         if isinstance(val, str):
             # Apply secret redaction
-            cleaned = redact_secrets(val)
+            cleaned = _apply_secret_redaction(val)
 
             # Mask assignment secrets
             def _mask_assignment(match: re.Match) -> str:
@@ -179,7 +183,7 @@ class EventSanitizer:
         str_repr = str(val)
         if len(str_repr) > cls.MAX_METADATA_STRING_LENGTH:
             str_repr = str_repr[: cls.MAX_METADATA_STRING_LENGTH] + "... [TRUNCATED]"
-        return redact_secrets(str_repr)
+        return _apply_secret_redaction(str_repr)
 
     @classmethod
     def create_safe_event(

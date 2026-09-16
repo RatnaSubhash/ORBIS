@@ -51,6 +51,7 @@ class EventBus:
         self._task_history: Dict[str, Deque[AgentEvent]] = {}
         self._task_order: Deque[str] = deque(maxlen=200)  # track active tasks for eviction
 
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._is_closed: bool = False
 
     @property
@@ -80,6 +81,11 @@ class EventBus:
 
         sub_id = f"sub_{uuid4().hex[:8]}"
         self._subscribers[sub_id] = (callback, filter_fn)
+
+        try:
+            self._loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
 
         # Replay historical events if requested
         if replay_task_id and replay_task_id in self._task_history:
@@ -169,19 +175,32 @@ class EventBus:
         if not self._subscribers:
             return
 
+        current_loop = None
         try:
-            loop = asyncio.get_running_loop()
+            current_loop = asyncio.get_running_loop()
         except RuntimeError:
-            # If no running event loop, we cannot schedule async delivery tasks
+            pass
+
+        target_loop = current_loop or self._loop
+        if target_loop is None or target_loop.is_closed():
             return
 
         for sub_id, (cb, filter_fn) in list(self._subscribers.items()):
             if filter_fn and not filter_fn(event):
                 continue
 
-            task = loop.create_task(self._deliver_to_subscriber(sub_id, cb, event))
-            self._pending_tasks.add(task)
-            task.add_done_callback(self._pending_tasks.discard)
+            if current_loop is target_loop:
+                task = target_loop.create_task(self._deliver_to_subscriber(sub_id, cb, event))
+                self._pending_tasks.add(task)
+                task.add_done_callback(self._pending_tasks.discard)
+            else:
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        self._deliver_to_subscriber(sub_id, cb, event),
+                        target_loop,
+                    )
+                except Exception as e:
+                    logger.warning("Failed threadsafe event delivery: %s", e)
 
     async def publish(self, event: AgentEvent) -> None:
         """
