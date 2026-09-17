@@ -37,7 +37,7 @@ from core.agent.orchestrator import AgentOrchestrator
 from core.events.bus import EventBus
 from core.events.models import AgentEvent, AgentEventType
 from core.events.sanitizer import EventSanitizer
-from core.gateway import create_app
+from core.gateway import create_app, routes
 from core.gateway.models import TaskSubmitRequest
 from core.gateway.task_manager import TaskManager
 from core.gateway.websocket import WebSocketConnectionConfig, handle_task_websocket
@@ -977,3 +977,103 @@ async def test_replay_dedup_scenario_f_disconnect_during_replay_cleans_subscribe
 
     # Verify that despite disconnect during replay, subscriber is cleanly removed
     assert bus.subscriber_count == 0
+
+
+# ============================================================================
+# 23. Canonical Tool Registry Factory & Echo Task Regression Tests
+# ============================================================================
+def test_default_create_app_orchestrator_registry_contains_canonical_tools():
+    """
+    Regression Test 7A: Verifies that create_app() with default dependencies
+    produces an orchestrator whose registry contains canonical tools (e.g. echo, file, desktop).
+    """
+    app = create_app()
+    orch = app.dependency_overrides[routes.get_orchestrator]()
+    assert orch is not None
+    assert orch.tool_registry is not None
+    assert orch.tool_registry.get("echo") is not None
+    assert orch.tool_registry.get("file") is not None
+    assert orch.tool_registry.get("desktop") is not None
+    assert orch.tool_registry.get("terminal") is not None
+    assert orch.tool_registry.get("document") is not None
+
+
+def test_default_create_app_executes_echo_task_and_records_lifecycle_events():
+    """
+    Regression Test 7B & 7C: Verifies that POST /api/tasks with
+    'Say hello from the ORBIS gateway test.' executes successfully without
+    raising KeyError: Tool 'echo' is not registered, and produces expected lifecycle events.
+    """
+    import time
+    app = create_app()
+    with TestClient(app) as client:
+        # Synchronous execution
+        resp = client.post(
+            "/api/tasks",
+            json={"prompt": "Say hello from the ORBIS gateway test.", "sync": True},
+        )
+        assert resp.status_code in (200, 202)
+        data = resp.json()
+        task_id = data["task_id"]
+        assert data["status"] == "COMPLETED"
+
+        # Check status endpoint
+        status_resp = client.get(f"/api/tasks/{task_id}")
+        assert status_resp.status_code == 200
+        assert status_resp.json()["status"] == "COMPLETED"
+
+        # Check event history
+        events_resp = client.get(f"/api/tasks/{task_id}/events")
+        assert events_resp.status_code == 200
+        events = events_resp.json()["events"]
+        event_types = [e["event_type"] for e in events]
+
+        assert "TASK_STARTED" in event_types
+        assert "STEP_STARTED" in event_types
+        assert "STEP_COMPLETED" in event_types
+        assert "TASK_COMPLETED" in event_types
+        assert event_types[-1] == "TASK_COMPLETED"
+
+        # Async execution check
+        resp_async = client.post(
+            "/api/tasks",
+            json={"prompt": "Say hello from the ORBIS gateway test.", "sync": False},
+        )
+        assert resp_async.status_code == 202
+        async_task_id = resp_async.json()["task_id"]
+
+        completed = False
+        for _ in range(30):
+            time.sleep(0.05)
+            chk = client.get(f"/api/tasks/{async_task_id}")
+            if chk.status_code == 200 and chk.json()["status"] == "COMPLETED":
+                completed = True
+                break
+        assert completed is True
+
+
+def test_explicit_orchestrator_injection_still_respected():
+    """
+    Regression Test 7D: Verifies that explicit injection of orchestrator and event_bus
+    in create_app() continues to be strictly respected.
+    """
+    custom_bus = EventBus()
+    custom_reg = ToolRegistry()
+    custom_reg.register(EchoTool())
+    custom_llm = MockLLMProvider()
+    custom_orch = AgentOrchestrator(
+        llm_provider=custom_llm,
+        tool_registry=custom_reg,
+        event_bus=custom_bus,
+    )
+    custom_mgr = TaskManager()
+
+    app = create_app(
+        orchestrator=custom_orch,
+        event_bus=custom_bus,
+        task_manager=custom_mgr,
+    )
+
+    assert app.dependency_overrides[routes.get_orchestrator]() is custom_orch
+    assert app.dependency_overrides[routes.get_event_bus]() is custom_bus
+    assert app.dependency_overrides[routes.get_task_manager]() is custom_mgr

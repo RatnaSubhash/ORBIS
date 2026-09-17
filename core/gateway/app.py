@@ -60,8 +60,8 @@ def create_app(
     orch = orchestrator
     if orch is None:
         from core.agent.llm.mock import MockLLMProvider
-        from core.tools.registry import ToolRegistry
-        reg = ToolRegistry()
+        from core.tools.registry import create_default_tool_registry
+        reg = create_default_tool_registry()
         mock_llm = MockLLMProvider()
         orch = AgentOrchestrator(
             llm_provider=mock_llm,
