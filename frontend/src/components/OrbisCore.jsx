@@ -23,7 +23,12 @@ import {
   submitTask,
   getTaskStatus,
   connectTaskWebSocket,
+  startVoiceCapture,
+  stopVoiceCapture,
+  cancelVoiceCapture,
+  speakText,
 } from '../api/gateway';
+
 import { OrbisGlobe } from './core/OrbisGlobe';
 import { useAwakening } from './core/AwakeningSequence';
 import DecryptedText from './ui/DecryptedText';
@@ -41,6 +46,8 @@ export function OrbisCore() {
   const [currentTaskId, setCurrentTaskId] = useState(null);
   const [taskStatus, setTaskStatus] = useState('IDLE');
   const [taskSummary, setTaskSummary] = useState('');
+  const [responseAnswer, setResponseAnswer] = useState('');
+  const [isSpeaking, setIsSpeaking] = useState(false);
   const [events, setEvents] = useState([]);
   const [pendingApproval, setPendingApproval] = useState(null);
   const [gatewayOnline, setGatewayOnline] = useState(false);
@@ -53,12 +60,13 @@ export function OrbisCore() {
   // Interaction state
   const [inputFocused, setInputFocused] = useState(false);
 
-  // Refs for task boundaries and deduplication
+  // Refs for task boundaries, voice tracking, and deduplication
   const seenEventIdsRef = useRef(new Set());
   const wsCleanupRef = useRef(null);
   const currentTaskIdRef = useRef(null);
   const visualStateRef = useRef('idle');
   const settleTimerRef = useRef(null);
+  const isVoiceTaskRef = useRef(false);
 
   // Keep ref synchronized for immediate callback checks
   visualStateRef.current = visualState;
@@ -120,34 +128,48 @@ export function OrbisCore() {
     };
   }, []);
 
-  // ── WebSocket cleanup on unmount ──────────────────────────────────────────
+  // ── WebSocket & Voice cleanup on unmount ──────────────────────────────────
+  const isListeningRef = useRef(false);
+  isListeningRef.current = visualState === 'listening';
+
   useEffect(() => {
     return () => {
       if (wsCleanupRef.current) {
         wsCleanupRef.current();
         wsCleanupRef.current = null;
       }
+      if (isListeningRef.current) {
+        cancelVoiceCapture().catch(() => {});
+      }
     };
   }, []);
 
-  // ── Task submission ───────────────────────────────────────────────────────
-  const handleSubmit = useCallback(async (e) => {
-    e.preventDefault();
-    if (!prompt.trim() || isSubmitting) return;
+  // ── Cancel voice capture on gateway disconnect ────────────────────────────
+  useEffect(() => {
+    if (!gatewayOnline && visualState === 'listening') {
+      cancelVoiceCapture().catch(() => {});
+      setVisualState('idle');
+    }
+  }, [gatewayOnline, visualState]);
 
+  // ── Central Task Submission Pipeline ──────────────────────────────────────
+  // ── Central Task Submission Pipeline ──────────────────────────────────────
+  const executeTaskPrompt = useCallback(async (promptText, isVoice = false) => {
+    const cleanPrompt = (promptText || '').trim();
+    if (!cleanPrompt || isSubmitting) return;
+
+    isVoiceTaskRef.current = isVoice;
     setErrorMessage(null);
     setEvents([]);
     seenEventIdsRef.current.clear();
     setPendingApproval(null);
     setTaskSummary('');
+    setResponseAnswer('');
     setIsSubmitting(true);
     setTaskStatus('SUBMITTING');
 
     // Cancel any pending settle timer from previous tasks
     settleTimerRef.current?.cancel();
-
-    // Entering new task prompt submission -> 'thinking' visual state
-    setVisualState('thinking');
 
     if (wsCleanupRef.current) {
       wsCleanupRef.current();
@@ -155,7 +177,7 @@ export function OrbisCore() {
     }
 
     try {
-      const submitRes = await submitTask(prompt, false);
+      const submitRes = await submitTask(cleanPrompt, false);
       const taskId = submitRes.task_id;
       currentTaskIdRef.current = taskId;
       setCurrentTaskId(taskId);
@@ -179,6 +201,34 @@ export function OrbisCore() {
             event.event_type === 'APPROVAL_DENIED'
           ) {
             setPendingApproval(null);
+          }
+
+          // Authoritative user-facing answer extraction on TASK_COMPLETED
+          if (event.event_type === 'TASK_COMPLETED') {
+            const answer = event.metadata?.answer || event.safe_user_message || '';
+            if (answer) {
+              setResponseAnswer(answer);
+            }
+
+            if (isVoiceTaskRef.current) {
+              // Voice request lifecycle:
+              // TASK_COMPLETED -> safe answer received -> display answer -> responding -> SAPI5 TTS -> TTS finished -> idle
+              settleTimerRef.current?.cancel();
+              setVisualState('responding');
+              setIsSpeaking(true);
+
+              speakText(answer)
+                .catch((err) => {
+                  console.warn('SAPI5 TTS vocalization failed:', err);
+                  // Safety invariant 5: keep visual answer, do not erase, do not expose raw error, return to idle
+                })
+                .finally(() => {
+                  setIsSpeaking(false);
+                  setVisualState('idle');
+                  isVoiceTaskRef.current = false;
+                });
+              return;
+            }
           }
 
           // Event-aware visual state resolution
@@ -220,9 +270,26 @@ export function OrbisCore() {
             .then((st) => {
               if (st.status) setTaskStatus(st.status);
               if (st.summary) setTaskSummary(st.summary);
-              if (st.status === 'COMPLETED' && visualStateRef.current !== 'completed') {
-                setVisualState('completed');
-                settleTimerRef.current?.schedule(taskId);
+              const answer = st.answer || st.summary;
+              if (st.status === 'COMPLETED') {
+                if (answer) setResponseAnswer(answer);
+                if (isVoiceTaskRef.current) {
+                  settleTimerRef.current?.cancel();
+                  setVisualState('responding');
+                  setIsSpeaking(true);
+                  speakText(answer)
+                    .catch((err) => {
+                      console.warn('SAPI5 TTS vocalization failed:', err);
+                    })
+                    .finally(() => {
+                      setIsSpeaking(false);
+                      setVisualState('idle');
+                      isVoiceTaskRef.current = false;
+                    });
+                } else if (visualStateRef.current !== 'completed') {
+                  setVisualState('completed');
+                  settleTimerRef.current?.schedule(taskId);
+                }
               } else if (st.status === 'FAILED' && visualStateRef.current !== 'failed') {
                 setVisualState('failed');
                 settleTimerRef.current?.schedule(taskId);
@@ -242,7 +309,67 @@ export function OrbisCore() {
     } finally {
       setIsSubmitting(false);
     }
-  }, [prompt, isSubmitting]);
+  }, [isSubmitting]);
+
+  const handleSubmit = useCallback((e) => {
+    e.preventDefault();
+    if (!prompt.trim() || isSubmitting) return;
+    executeTaskPrompt(prompt, false);
+  }, [prompt, isSubmitting, executeTaskPrompt]);
+
+  // ── Globe Wake Interaction ───────────────────────────────────────────────
+  const handleGlobeWake = useCallback(async () => {
+    // 1. Awakening sequence protection: cannot wake during black, decrypting, holding, or gliding
+    if (isAwakening || awakeningPhase !== 'complete') {
+      return;
+    }
+
+    // 2. Active task protection: do not interrupt or create duplicate tasks
+    const activeStates = ['thinking', 'planning', 'executing', 'responding', 'approval', 'completed'];
+    if (activeStates.includes(orbisState) || isSubmitting) {
+      return;
+    }
+
+    // 3. Second click while listening: stop capture and transcribe
+    if (orbisState === 'listening') {
+      try {
+        const result = await stopVoiceCapture();
+        if (result && !result.empty && result.transcript) {
+          // Voice result reaches existing task pipeline (AgentEvents authoritatively drive visual state)
+          executeTaskPrompt(result.transcript, true);
+        } else {
+          // Empty speech result returns cleanly to idle
+          setVisualState('idle');
+          setTaskSummary('');
+        }
+      } catch (err) {
+        setVisualState('idle');
+        setErrorMessage(err.message || 'Microphone access is unavailable.');
+      }
+      return;
+    }
+
+    // 4. Idle wake: start voice capture
+    if (orbisState === 'idle') {
+      if (!gatewayOnline) {
+        setErrorMessage('Gateway offline');
+        return;
+      }
+
+      setErrorMessage(null);
+      setVisualState('listening');
+      setTaskSummary('');
+
+      try {
+        await startVoiceCapture();
+      } catch (err) {
+        // Voice failure returns safely to idle with user-safe error message
+        setVisualState('idle');
+        setErrorMessage(err.message || 'Microphone access is unavailable.');
+      }
+    }
+  }, [isAwakening, awakeningPhase, orbisState, isSubmitting, gatewayOnline, executeTaskPrompt]);
+
 
   // ─── Render ───────────────────────────────────────────────────────────────
   return (
@@ -288,8 +415,9 @@ export function OrbisCore() {
 
       {/* ── Globe — the visual core of ORBIS ── */}
       <div className="orbis-globe-stage" data-state={orbisState}>
-        <OrbisGlobe orbisState={orbisState} />
+        <OrbisGlobe orbisState={orbisState} onWake={handleGlobeWake} />
       </div>
+
 
       {/* ── State label below globe ── */}
       <div className="orbis-state-label" data-state={orbisState}>
@@ -352,6 +480,24 @@ export function OrbisCore() {
           </div>
         )}
       </div>
+
+      {/* ── Dedicated ORBIS response area ── */}
+      {responseAnswer && (
+        <div className="orbis-response-area" id="orbis-response-area">
+          <div className="orbis-response-header">
+            <span className="orbis-response-tag">ORBIS</span>
+            {isSpeaking && (
+              <span className="orbis-speaking-indicator" id="orbis-speaking-indicator">
+                <span className="orbis-speaking-dot" />
+                Vocalizing
+              </span>
+            )}
+          </div>
+          <div className="orbis-response-text" id="orbis-response-text">
+            {responseAnswer}
+          </div>
+        </div>
+      )}
 
       {/* ── Event stream ── */}
       {events.length > 0 && (

@@ -34,6 +34,7 @@ class ManagedTask:
         self.prompt = prompt
         self.status = status
         self.summary: Optional[str] = None
+        self.answer: Optional[str] = None
         self.error: Optional[str] = None
         self.created_at: datetime = datetime.now(timezone.utc)
         self.updated_at: datetime = datetime.now(timezone.utc)
@@ -128,6 +129,13 @@ class TaskManager:
             task.result = res
             raw_summary = getattr(res, "summary", None)
             task.summary = EventSanitizer.clean_message(raw_summary) if raw_summary else None
+
+            from core.voice.service import extract_spoken_response
+            extracted_ans = extract_spoken_response(res)
+            if extracted_ans and extracted_ans != "Task completed successfully.":
+                task.answer = EventSanitizer.clean_message(extracted_ans)
+            elif task.summary:
+                task.answer = task.summary
 
             res_state = getattr(res, "status", None)
             if res_state == TaskState.BLOCKED_PENDING_APPROVAL:

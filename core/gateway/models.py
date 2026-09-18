@@ -40,6 +40,7 @@ class TaskStatusResponse(BaseModel):
     correlation_id: str
     status: str
     summary: Optional[str] = None
+    answer: Optional[str] = None
     pending_approval: Optional[PendingApprovalDetails] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -71,3 +72,33 @@ class ErrorResponse(BaseModel):
     error: str
     code: str
     details: Optional[Any] = None
+
+
+class VoiceStartResponse(BaseModel):
+    """Response returned when push-to-talk voice capture begins."""
+    status: str
+    message: str
+
+
+class VoiceStopResponse(BaseModel):
+    """Response returned when push-to-talk voice capture stops and transcribes."""
+    transcript: str
+    empty: bool
+    status: str
+
+
+class VoiceCancelResponse(BaseModel):
+    """Response returned when voice capture is cancelled without transcribing."""
+    status: str
+    message: str
+
+
+class VoiceSpeakRequest(BaseModel):
+    """Payload for requesting local SAPI5 TTS vocalization."""
+    text: str = Field(..., min_length=1, max_length=5000, description="User-facing text to speak via local TTS.")
+
+
+class VoiceSpeakResponse(BaseModel):
+    """Response returned upon completing local TTS vocalization."""
+    status: str
+    message: str

@@ -78,11 +78,12 @@ def create_default_tool_registry(
     mock_terminal_runner: Optional[Any] = None,
     content_generator: Optional[Any] = None,
     tts_provider: Optional[Any] = None,
+    llm_provider: Optional[Any] = None,
 ) -> ToolRegistry:
     """
     Constructs an authoritative, fully populated ToolRegistry containing all
-    implemented Phase 1 through Phase 11 tools with their standard configurations.
-    Ensures WebResearchTool is registered as 'web_research' across all agent pipelines.
+    implemented Phase 1 through Phase 12 tools with their standard configurations.
+    Ensures WebResearchTool, SystemUtilityTool, and KnowledgeTool are registered across all agent pipelines.
     """
     from core.tools.echo_tool import EchoTool
     from core.tools.file_tool import FileTool
@@ -94,11 +95,22 @@ def create_default_tool_registry(
     from core.tools.document_tool import DocumentTool
     from core.tools.intent_tool import IntentContinuityTool
     from core.tools.restoration_tool import RestorationTool
+    from core.tools.system_tool import SystemUtilityTool
+    from core.tools.knowledge_tool import KnowledgeTool
+
+    if llm_provider is None:
+        try:
+            from core.agent.llm.factory import get_llm_provider
+            llm_provider = get_llm_provider()
+        except Exception:
+            llm_provider = None
 
     registry = ToolRegistry()
     registry.register(EchoTool())
     registry.register(FileTool())
     registry.register(DesktopTool())
+    registry.register(SystemUtilityTool())
+    registry.register(KnowledgeTool(llm_provider=llm_provider))
 
     if db is not None:
         registry.register(ContinuityTool(db=db))
@@ -129,4 +141,3 @@ def create_default_tool_registry(
         registry.register(VoiceTool(tts_provider=tts_provider))
 
     return registry
-

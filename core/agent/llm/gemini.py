@@ -76,7 +76,11 @@ class GeminiProvider(BaseLLMProvider):
             create_kwargs["response_format"] = {"type": "text", "mime_type": "application/json"}
 
         try:
-            interaction = await self.client.aio.interactions.create(**create_kwargs)
+            import asyncio
+            interaction = await asyncio.wait_for(
+                self.client.aio.interactions.create(**create_kwargs),
+                timeout=10.0,
+            )
         except Exception as exc:
             logger.error("Gemini Interactions request failed for model '%s': %s", self.model, exc)
             raise RuntimeError(f"Gemini generation request failed: {exc}") from exc

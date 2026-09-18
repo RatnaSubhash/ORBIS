@@ -275,6 +275,8 @@ class ConversationContext(BaseModel):
                 has_it = True
             elif re.search(r"\babout\s+it[?.!]?$", lower):
                 has_it = True
+            elif re.search(r"\b(?:compare|contrast|differentiate|connect|link)\s+it\s+(?:with|to|and)\b", lower) or re.search(r"\b(?:difference\s+between)\s+it\s+and\b", lower):
+                has_it = True
 
         is_anaphoric = has_that or has_its or has_it
 
@@ -321,8 +323,14 @@ class ConversationContext(BaseModel):
             if has_it:
                 if not re.search(r"\btime\s+is\s+it\b", lower):
                     resolved = re.sub(
-                        r"\b(?:explain|about|for|understand|summarize)\s+it\b",
-                        rf"\g<0>".replace("it", entity_to_use),
+                        r"\b(?:explain|about|for|understand|summarize|compare|contrast|differentiate)\s+it\b",
+                        lambda m: m.group(0)[:-2] + entity_to_use,
+                        resolved,
+                        flags=re.IGNORECASE,
+                    )
+                    resolved = re.sub(
+                        r"\b(?:between)\s+it\s+and\b",
+                        f"between {entity_to_use} and",
                         resolved,
                         flags=re.IGNORECASE,
                     )
@@ -409,10 +417,13 @@ class ConversationContext(BaseModel):
         m = re.search(r"^(?:explain|describe|tell\s+me\s+about|what\s+is|what\s+are)\s+(?:the\s+)?([a-zA-Z0-9_\-\s]+?)[?.!]?$", text, re.IGNORECASE)
         if m:
             candidate = m.group(1).strip()
-            if candidate and candidate.lower() not in ("it", "that", "this", "something", "anything"):
+            if candidate and candidate.lower() not in (
+                "it", "that", "this", "something", "anything",
+                "your capability", "your capabilities", "capabilities", "what you do", "what all you do"
+            ):
                 return candidate
 
-        proj_match = re.search(r"\b(?:build|create|work\s+on)\s+(?:a\s+)?([a-zA-Z0-9_\-\s]+?\s+project)\b", text, re.IGNORECASE)
+        proj_match = re.search(r"\b(?:build|create|work\s+on|help(?:\s+me)?\s+with|assist(?:\s+with)?)\s+(?:a\s+)?([a-zA-Z0-9_\-\s]+?\s+project)\b", text, re.IGNORECASE)
         if proj_match:
             return proj_match.group(1).strip()
 

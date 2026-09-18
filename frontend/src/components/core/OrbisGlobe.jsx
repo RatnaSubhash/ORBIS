@@ -36,6 +36,7 @@ export function OrbisGlobe({
   orbisState = 'idle',
   markers = DEFAULT_MARKERS,
   className = '',
+  onWake,
 }) {
   const speed = useMemo(
     () => STATE_SPEEDS[orbisState] ?? STATE_SPEEDS.idle,
@@ -47,8 +48,10 @@ export function OrbisGlobe({
       markers={markers}
       className={`orbis-globe-pulse orbis-globe-${orbisState} ${className}`.trim()}
       speed={speed}
+      onWake={onWake}
     />
   );
 }
+
 
 export default OrbisGlobe;

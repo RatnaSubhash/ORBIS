@@ -156,3 +156,107 @@ export function connectTaskWebSocket(taskId, { onEvent, onError, onClose, onOpen
     }
   };
 }
+
+/**
+ * Starts Push-to-Talk voice capture using the canonical backend VoiceService.
+ * POST /api/voice/start
+ * @returns {Promise<{ status: string, message: string }>}
+ */
+export async function startVoiceCapture() {
+  const response = await fetch(`${GATEWAY_HTTP_BASE}/api/voice/start`, {
+    method: 'POST',
+    headers: { 'Accept': 'application/json' },
+  });
+
+  if (!response.ok) {
+    let errorDetail = 'Microphone access is unavailable.';
+    try {
+      const errJson = await response.json();
+      errorDetail = errJson.error || errJson.detail || errorDetail;
+    } catch {
+      // ignore json parse error
+    }
+    throw new Error(errorDetail);
+  }
+
+  return await response.json();
+}
+
+/**
+ * Stops Push-to-Talk voice capture and receives the transcribed prompt.
+ * POST /api/voice/stop
+ * @returns {Promise<{ transcript: string, empty: boolean, status: string }>}
+ */
+export async function stopVoiceCapture() {
+  const response = await fetch(`${GATEWAY_HTTP_BASE}/api/voice/stop`, {
+    method: 'POST',
+    headers: { 'Accept': 'application/json' },
+  });
+
+  if (!response.ok) {
+    let errorDetail = 'Voice capture failed.';
+    try {
+      const errJson = await response.json();
+      errorDetail = errJson.error || errJson.detail || errorDetail;
+    } catch {
+      // ignore json parse error
+    }
+    throw new Error(errorDetail);
+  }
+
+  return await response.json();
+}
+
+/**
+ * Cancels active Push-to-Talk voice capture and releases in-memory audio.
+ * POST /api/voice/cancel
+ * @returns {Promise<{ status: string, message: string }>}
+ */
+export async function cancelVoiceCapture() {
+  try {
+    const response = await fetch(`${GATEWAY_HTTP_BASE}/api/voice/cancel`, {
+      method: 'POST',
+      headers: { 'Accept': 'application/json' },
+    });
+    if (response.ok) {
+      return await response.json();
+    }
+  } catch {
+    // Ignore network failure on cancel
+  }
+  return { status: 'idle', message: 'Cancelled' };
+}
+
+/**
+ * Vocalizes user-facing answer via canonical backend VoiceService SAPI5 TTS.
+ * POST /api/voice/speak
+ * @param {string} text - Clean, human-readable user answer to speak.
+ * @returns {Promise<{ status: string, message: string }>}
+ */
+export async function speakText(text) {
+  if (!text || !text.trim()) {
+    return { status: 'skipped', message: 'Empty text' };
+  }
+
+  const response = await fetch(`${GATEWAY_HTTP_BASE}/api/voice/speak`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    },
+    body: JSON.stringify({ text: text.trim() }),
+  });
+
+  if (!response.ok) {
+    let errorDetail = 'Speech synthesis failed.';
+    try {
+      const errJson = await response.json();
+      errorDetail = errJson.error || errJson.detail || errorDetail;
+    } catch {
+      // ignore json parse error
+    }
+    throw new Error(errorDetail);
+  }
+
+  return await response.json();
+}

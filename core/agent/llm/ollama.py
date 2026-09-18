@@ -31,6 +31,14 @@ class OllamaProvider(BaseLLMProvider):
         self.model = model or settings.ollama_model
         self.timeout = timeout or settings.ollama_timeout
 
+    def is_available(self) -> bool:
+        """Checks if the local Ollama daemon is reachable and responding."""
+        try:
+            resp = httpx.get(f"{self.base_url}/api/tags", timeout=2.0)
+            return resp.status_code == 200
+        except Exception:
+            return False
+
     async def generate(
         self,
         prompt: str,

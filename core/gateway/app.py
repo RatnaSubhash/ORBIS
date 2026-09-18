@@ -18,6 +18,7 @@ from core.agent.orchestrator import AgentOrchestrator
 from core.events.bus import EventBus
 from core.gateway import routes, websocket
 from core.gateway.task_manager import TaskManager
+from core.voice.models import VoiceState
 
 logger = logging.getLogger("orbis.gateway.app")
 
@@ -59,15 +60,27 @@ def create_app(
     # If no orchestrator provided, build default orchestrator lazily
     orch = orchestrator
     if orch is None:
-        from core.agent.llm.mock import MockLLMProvider
+        from core.config import get_settings
         from core.tools.registry import create_default_tool_registry
-        reg = create_default_tool_registry()
-        mock_llm = MockLLMProvider()
+        settings = get_settings()
+        if getattr(settings, "orbis_env", "development") == "test":
+            from core.agent.llm.mock import MockLLMProvider
+            llm = MockLLMProvider()
+        else:
+            from core.agent.llm.factory import get_llm_provider
+            try:
+                llm = get_llm_provider()
+            except Exception as exc:
+                logger.error("Failed to initialize configured LLM provider (%s): %s. Setting llm=None.", getattr(settings, "llm_provider", "unknown"), exc)
+                llm = None
+
+        reg = create_default_tool_registry(llm_provider=llm)
         orch = AgentOrchestrator(
-            llm_provider=mock_llm,
+            llm_provider=llm,
             tool_registry=reg,
             event_bus=bus,
         )
+
 
     # 2. Lifespan context manager for safe shutdown & resource cleanup
     @asynccontextmanager
@@ -80,8 +93,15 @@ def create_app(
         yield
 
         logger.info("Shutting down ORBIS Gateway service. Cleaning up background tasks.")
+        if getattr(orch, "voice_service", None) and getattr(orch.voice_service, "state", None) == VoiceState.LISTENING:
+            try:
+                audio = orch.voice_service.stop_listening()
+                audio.release()
+            except Exception:
+                pass
         await mgr.close(timeout=2.0)
         await bus.close(timeout=2.0)
+
         logger.info("ORBIS Gateway service shutdown complete.")
 
     app = FastAPI(
@@ -90,6 +110,9 @@ def create_app(
         version="0.2.0",
         lifespan=lifespan,
     )
+    app.state.orchestrator = orch
+    app.state.event_bus = bus
+    app.state.task_manager = mgr
 
     # 3. CORS Middleware configuration
     origins = resolve_cors_origins(allowed_origins)

@@ -93,15 +93,32 @@ def format_useful_tool_output(tool_name: str, output: Any, step_params: Optional
             return f"Successfully {action} document '{fname}'."
 
     # 4. Echo tool
-    if tool_name == "echo" and isinstance(output, dict):
-        if output.get("message"):
+    if tool_name == "echo":
+        if isinstance(output, str) and output.strip():
+            return output.strip()
+        if isinstance(output, dict) and output.get("message"):
             return str(output["message"])
 
     # 5. Continuity
     if isinstance(output, dict) and output.get("grounded_summary"):
         return str(output["grounded_summary"])
 
+    # 6. System Utility tool (time, date, host)
+    if tool_name in ("system", "system_tool") and isinstance(output, dict):
+        formatted = output.get("formatted")
+        if formatted:
+            return str(formatted)
+        if "time" in output and "date" in output:
+            return f"The current time is {output['time']} on {output['date']}."
+
+    # 7. Knowledge tool (factual, explanation, comparison, project assistance)
+    if tool_name in ("knowledge", "knowledge_tool") and isinstance(output, dict):
+        answer = output.get("answer")
+        if answer:
+            return str(answer)
+
     return None
+
 
 
 EventListener = Callable[[StatusEvent], Awaitable[None]]
@@ -248,8 +265,8 @@ class AgentOrchestrator:
 
     def __init__(
         self,
-        llm_provider: BaseLLMProvider,
-        tool_registry: ToolRegistry,
+        llm_provider: Optional[BaseLLMProvider] = None,
+        tool_registry: Optional[ToolRegistry] = None,
         db_manager: Optional[DatabaseManager] = None,
         continuity_service: Optional[Any] = None,
         intent_engine: Optional[Any] = None,
@@ -1010,6 +1027,22 @@ class AgentOrchestrator:
                             if not exec_res.final_output:
                                 exec_res.final_output = friendly
 
+            # Authoritative user-facing answer extraction:
+            # If summary is still the generic multi-step status message, extract the true human-readable answer
+            from core.voice.service import extract_spoken_response
+            answer_candidate = extract_spoken_response(exec_res)
+            if answer_candidate and answer_candidate != "Task completed successfully.":
+                user_facing_answer = answer_candidate
+                if exec_res.summary.startswith("Multi-step task completed successfully") and exec_res.plan and len(exec_res.plan.steps) == 1:
+                    exec_res.summary = answer_candidate
+                    if not exec_res.final_output:
+                        exec_res.final_output = answer_candidate
+            else:
+                user_facing_answer = exec_res.summary
+
+            clean_answer = EventSanitizer.clean_message(user_facing_answer)
+            exec_res.summary = clean_answer
+
             artifact_info = None
             if isinstance(exec_res.final_output, dict) and "file_name" in exec_res.final_output:
                 artifact_info = exec_res.final_output
@@ -1030,20 +1063,22 @@ class AgentOrchestrator:
             self.conversation_context.record_turn(
                 user_query=user_request,
                 resolved_query=effective_request,
-                response_text=exec_res.summary,
+                response_text=clean_answer,
                 tool_name=last_tool,
-                tool_result_summary=exec_res.summary,
+                tool_result_summary=clean_answer,
                 artifact=artifact_info,
             )
 
         # Emit terminal task status event
         if getattr(exec_res, "status", None) == TaskState.COMPLETED:
+            clean_answer = EventSanitizer.clean_message(user_facing_answer)
             self._emit_agent_event(
                 event_type=AgentEventType.TASK_COMPLETED,
                 task_id=task_id,
                 correlation_id=correlation_id,
-                safe_user_message=exec_res.summary,
+                safe_user_message=clean_answer,
                 status="COMPLETED",
+                metadata={"answer": clean_answer},
             )
         elif getattr(exec_res, "status", None) in (TaskState.BLOCKED_PENDING_APPROVAL, TaskState.CANCELLED):
             pass
@@ -1127,12 +1162,16 @@ class AgentOrchestrator:
         elif getattr(exec_res, "status", None) == TaskState.COMPLETED:
             self._pending_approval = None
             correlation_id = ctx.metadata.get("correlation_id") or f"corr_{pending.task_id}"
+            from core.voice.service import extract_spoken_response
+            answer_candidate = extract_spoken_response(exec_res)
+            clean_answer = EventSanitizer.clean_message(answer_candidate or exec_res.summary)
             self._emit_agent_event(
                 event_type=AgentEventType.TASK_COMPLETED,
                 task_id=pending.task_id,
                 correlation_id=correlation_id,
-                safe_user_message=exec_res.summary,
+                safe_user_message=clean_answer,
                 status="COMPLETED",
+                metadata={"answer": clean_answer},
             )
         elif getattr(exec_res, "status", None) == TaskState.FAILED:
             correlation_id = ctx.metadata.get("correlation_id") or f"corr_{pending.task_id}"

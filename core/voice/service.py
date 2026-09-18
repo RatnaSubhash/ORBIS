@@ -54,14 +54,15 @@ def extract_spoken_response(agent_exec_res: Any) -> str:
     if candidate_text is None and isinstance(final_output, str) and final_output.strip():
         candidate_text = final_output.strip()
 
-    # 2. Dictionary final_output: prefer content, message, text, summary
+    # 2. Dictionary final_output: prefer answer, formatted, content, message, text, summary
     elif candidate_text is None and isinstance(final_output, dict):
-        preferred_keys = ("content", "message", "text", "summary", "grounded_summary")
+        preferred_keys = ("answer", "formatted", "content", "message", "text", "summary", "grounded_summary")
         for key in preferred_keys:
             val = final_output.get(key)
             if isinstance(val, str) and val.strip():
                 candidate_text = val.strip()
                 break
+
 
         # Check for structured active desktop window output
         if candidate_text is None and "process_name" in final_output:
@@ -77,7 +78,7 @@ def extract_spoken_response(agent_exec_res: Any) -> str:
             candidate_text = f"Found {count} files in your workspace, including {', '.join(names)}." if names else "Your workspace directory is empty."
 
         # Check for document persistence output
-        elif candidate_text is None and "file_name" in final_output and "size_bytes" in final_output:
+        elif candidate_text is None and "file_name" in final_output:
             fname = final_output["file_name"]
             verb = "updated" if final_output.get("overwritten") else "created"
             candidate_text = f"Successfully {verb} document '{fname}'."
@@ -131,6 +132,22 @@ class VoiceService:
         """Stops Push-to-Talk capture and returns the in-memory AudioBuffer."""
         self.state = VoiceState.IDLE
         return self.capture.stop_capture()
+
+    async def speak(self, text: str) -> Optional[SpeechResult]:
+        """
+        Synthesizes and speaks text directly through the configured TTS provider.
+        Manages VoiceState.SPEAKING -> VoiceState.IDLE lifecycle.
+        """
+        if not self.tts_provider or not text or not text.strip():
+            return None
+        self.state = VoiceState.SPEAKING
+        try:
+            res = await self.tts_provider.speak(text.strip())
+            if res and not res.success:
+                raise RuntimeError(res.error or "TTS synthesis failed.")
+            return res
+        finally:
+            self.state = VoiceState.IDLE
 
     async def process_spoken_request(
         self,

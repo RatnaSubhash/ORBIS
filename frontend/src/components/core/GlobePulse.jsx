@@ -14,34 +14,69 @@ export function GlobePulse({
   markers = defaultMarkers,
   className = "",
   speed = 0.003,
+  onWake,
 }) {
   const canvasRef = useRef(null);
   const pointerInteracting = useRef(null);
+  const pointerStartPos = useRef(null);
   const dragOffset = useRef({ phi: 0, theta: 0 });
   const phiOffsetRef = useRef(0);
   const thetaOffsetRef = useRef(0);
   const isPausedRef = useRef(false);
   const speedRef = useRef(speed);
+  const onWakeRef = useRef(onWake);
 
   useEffect(() => {
     speedRef.current = speed;
   }, [speed]);
 
+  useEffect(() => {
+    onWakeRef.current = onWake;
+  }, [onWake]);
+
   const handlePointerDown = useCallback((e) => {
+    // Only primary button / touch activates pointer interaction
+    if (e.button !== undefined && e.button !== 0) return;
     pointerInteracting.current = { x: e.clientX, y: e.clientY };
+    pointerStartPos.current = { x: e.clientX, y: e.clientY };
     if (canvasRef.current) canvasRef.current.style.cursor = "grabbing";
     isPausedRef.current = true;
   }, []);
 
-  const handlePointerUp = useCallback(() => {
+  const handlePointerUp = useCallback((e) => {
     if (pointerInteracting.current !== null) {
+      // Distinguish click/tap without meaningful drag from rotation drag
+      const start = pointerStartPos.current;
+      if (start && e && typeof e.clientX === "number") {
+        const dx = e.clientX - start.x;
+        const dy = e.clientY - start.y;
+        const dist = Math.hypot(dx, dy);
+        const DRAG_THRESHOLD_PX = 6;
+        if (dist < DRAG_THRESHOLD_PX) {
+          // Valid click/tap without drag -> trigger wake
+          if (typeof onWakeRef.current === "function") {
+            onWakeRef.current();
+          }
+        }
+      }
+
       phiOffsetRef.current += dragOffset.current.phi;
       thetaOffsetRef.current += dragOffset.current.theta;
       dragOffset.current = { phi: 0, theta: 0 };
     }
     pointerInteracting.current = null;
+    pointerStartPos.current = null;
     if (canvasRef.current) canvasRef.current.style.cursor = "grab";
     isPausedRef.current = false;
+  }, []);
+
+  const handleKeyDown = useCallback((e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      if (typeof onWakeRef.current === "function") {
+        onWakeRef.current();
+      }
+    }
   }, []);
 
   useEffect(() => {
@@ -60,6 +95,7 @@ export function GlobePulse({
       window.removeEventListener("pointerup", handlePointerUp);
     };
   }, [handlePointerUp]);
+
 
   useEffect(() => {
     if (!canvasRef.current) return;
@@ -133,10 +169,22 @@ export function GlobePulse({
           0% { transform: scaleX(0.3) scaleY(0.3); opacity: 0.8; }
           100% { transform: scaleX(1.5) scaleY(1.5); opacity: 0; }
         }
+        .orbis-globe-canvas:focus {
+          outline: none;
+        }
+        .orbis-globe-canvas:focus-visible {
+          outline: 1px solid rgba(51, 204, 221, 0.4);
+          outline-offset: 4px;
+        }
       `}</style>
       <canvas
         ref={canvasRef}
+        className="orbis-globe-canvas"
         onPointerDown={handlePointerDown}
+        onKeyDown={handleKeyDown}
+        tabIndex={0}
+        role="button"
+        aria-label="Wake ORBIS"
         style={{
           width: "100%",
           height: "100%",
@@ -147,6 +195,7 @@ export function GlobePulse({
           touchAction: "none",
         }}
       />
+
       {markers.map((m) => (
         <div
           key={m.id}

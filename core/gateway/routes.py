@@ -7,11 +7,13 @@ and human approval / continuation endpoints.
 from datetime import datetime, timezone
 import logging
 import re
-from typing import Optional
+from typing import Any, Optional
+
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from core.agent.orchestrator import AgentOrchestrator
+from core.config import get_settings
 from core.events.bus import EventBus
 from core.gateway.models import (
     ApprovalRequest,
@@ -22,8 +24,16 @@ from core.gateway.models import (
     TaskStatusResponse,
     TaskSubmitRequest,
     TaskSubmitResponse,
+    VoiceCancelResponse,
+    VoiceSpeakRequest,
+    VoiceSpeakResponse,
+    VoiceStartResponse,
+    VoiceStopResponse,
 )
 from core.gateway.task_manager import TaskManager
+from core.events.sanitizer import EventSanitizer
+from core.voice.models import VoiceState
+from core.voice.normalizer import VoiceNormalizer
 
 logger = logging.getLogger("orbis.gateway.routes")
 
@@ -40,6 +50,41 @@ def get_task_manager() -> TaskManager:
 
 def get_event_bus() -> EventBus:
     raise NotImplementedError("EventBus dependency not configured.")
+
+
+def get_voice_service(orchestrator: AgentOrchestrator = Depends(get_orchestrator)):
+    """
+    Resolves the canonical, singleton VoiceService attached to the orchestrator.
+    Guarantees exactly one authoritative VoiceService instance for the gateway lifecycle.
+    """
+    if getattr(orchestrator, "voice_service", None) is None:
+        settings = get_settings()
+        # Mocks are strictly restricted to explicit test environment; never silent in production
+        if getattr(settings, "orbis_env", "development") == "test":
+            from core.voice.capture.mock_capture import MockAudioCapture
+            from core.voice.stt.mock_stt import MockSTTProvider
+            from core.voice.tts.mock_tts import MockTTSProvider
+            capture = MockAudioCapture()
+            stt = MockSTTProvider()
+            tts = MockTTSProvider()
+        else:
+            from core.voice.capture.sounddevice_capture import SoundDeviceAudioCapture
+            from core.voice.stt.whisper_stt import FasterWhisperSTTProvider
+            from core.voice.tts.sapi_tts import WindowsSapiTTSProvider
+            import sys
+            capture = SoundDeviceAudioCapture()
+            stt = FasterWhisperSTTProvider()
+            tts = WindowsSapiTTSProvider() if sys.platform == "win32" else MockTTSProvider()
+
+
+        from core.voice.service import VoiceService
+        orchestrator.voice_service = VoiceService(
+            orchestrator=orchestrator,
+            capture=capture,
+            stt_provider=stt,
+            tts_provider=tts,
+        )
+    return orchestrator.voice_service
 
 
 TASK_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_\-]+$")
@@ -140,6 +185,7 @@ async def get_task_status(
             correlation_id=managed.correlation_id,
             status=managed.status,
             summary=managed.summary,
+            answer=getattr(managed, "answer", None) or managed.summary,
             pending_approval=pending_details,
             created_at=managed.created_at,
             updated_at=managed.updated_at,
@@ -156,11 +202,21 @@ async def get_task_status(
 
     latest_event = events[-1]
     first_event = events[0]
+    historical_answer = None
+    for ev in reversed(events):
+        if getattr(ev, "event_type", None) == AgentEventType.TASK_COMPLETED:
+            meta = getattr(ev, "metadata", {}) or {}
+            historical_answer = meta.get("answer") or ev.safe_user_message
+            break
+    if not historical_answer:
+        historical_answer = latest_event.safe_user_message
+
     return TaskStatusResponse(
         task_id=valid_id,
         correlation_id=latest_event.correlation_id,
         status=latest_event.status,
         summary=latest_event.safe_user_message,
+        answer=historical_answer,
         pending_approval=pending_details,
         created_at=first_event.timestamp,
         updated_at=latest_event.timestamp,
@@ -241,4 +297,141 @@ async def approve_task_step(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to resolve action approval.",
+        )
+
+
+# ============================================================================
+# Phase 11/12 Push-to-Talk Voice Interface Bridge
+# ============================================================================
+
+@router.post(
+    "/voice/start",
+    response_model=VoiceStartResponse,
+    status_code=status.HTTP_200_OK,
+    responses={503: {"model": ErrorResponse}},
+    summary="Start Push-to-Talk Voice Capture",
+)
+async def start_voice_capture(
+    voice_service: Any = Depends(get_voice_service),
+):
+    """
+    Begins Push-to-Talk microphone capture using the canonical VoiceService instance.
+    Checks microphone availability and transitions to LISTENING state.
+    """
+    if not voice_service.capture.is_available():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Microphone access is unavailable.",
+        )
+    try:
+        voice_service.start_listening()
+        return VoiceStartResponse(status="listening", message="Microphone capture started.")
+    except Exception as e:
+        logger.exception("Failed to start voice capture: %s", e)
+        if voice_service.state == VoiceState.LISTENING:
+            try:
+                buf = voice_service.stop_listening()
+                buf.release()
+            except Exception:
+                pass
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Microphone access is unavailable.",
+        )
+
+
+@router.post(
+    "/voice/stop",
+    response_model=VoiceStopResponse,
+    status_code=status.HTTP_200_OK,
+    responses={500: {"model": ErrorResponse}},
+    summary="Stop Push-to-Talk Voice Capture and Transcribe",
+)
+async def stop_voice_capture(
+    voice_service: Any = Depends(get_voice_service),
+):
+    """
+    Stops Push-to-Talk voice capture and transcribes using the canonical VoiceService.
+    Crucial privacy and security invariants:
+    - Zero audio persistence to disk
+    - Immediate in-memory audio release in finally block
+    - Returns only { transcript, empty, status } (raw transcript kept internal)
+    """
+    if voice_service.state != VoiceState.LISTENING:
+        return VoiceStopResponse(transcript="", empty=True, status="idle")
+
+    audio = voice_service.stop_listening()
+    try:
+        transcription = await voice_service.stt_provider.transcribe(audio)
+    except Exception as e:
+        logger.exception("Voice transcription failed: %s", e)
+        voice_service.state = VoiceState.IDLE
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Voice transcription failed.",
+        )
+    finally:
+        audio.release()
+
+    if transcription.is_empty_or_inaudible or not transcription.text:
+        return VoiceStopResponse(transcript="", empty=True, status="idle")
+
+    normalized = VoiceNormalizer.normalize_input(transcription.text)
+    return VoiceStopResponse(
+        transcript=normalized,
+        empty=not bool(normalized),
+        status="stopped",
+    )
+
+
+@router.post(
+    "/voice/cancel",
+    response_model=VoiceCancelResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Cancel Push-to-Talk Voice Capture",
+)
+async def cancel_voice_capture(
+    voice_service: Any = Depends(get_voice_service),
+):
+    """
+    Cancels active voice capture without transcribing, immediately releasing audio memory.
+    """
+    if voice_service.state == VoiceState.LISTENING:
+        try:
+            audio = voice_service.stop_listening()
+            audio.release()
+        except Exception:
+            pass
+    return VoiceCancelResponse(status="idle", message="Voice capture cancelled.")
+
+
+@router.post(
+    "/voice/speak",
+    response_model=VoiceSpeakResponse,
+    status_code=status.HTTP_200_OK,
+    responses={500: {"model": ErrorResponse}},
+    summary="Speak Text via Canonical VoiceService SAPI5 TTS",
+)
+async def speak_text(
+    req: VoiceSpeakRequest,
+    voice_service: Any = Depends(get_voice_service),
+):
+    """
+    Speaks the provided user-facing response using the canonical VoiceService's
+    local SAPI5 TTS provider. Memory-only, no cloud, no persistence.
+    Sanitizes text through EventSanitizer to guarantee no secrets, raw HTML,
+    or internal execution reasoning reach the vocalizer.
+    """
+    clean_text = EventSanitizer.clean_message(req.text or "")
+    if not clean_text:
+        return VoiceSpeakResponse(status="skipped", message="Empty text.")
+
+    try:
+        await voice_service.speak(clean_text)
+        return VoiceSpeakResponse(status="spoken", message="Speech synthesized successfully.")
+    except Exception as e:
+        logger.exception("TTS synthesis failed: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Speech synthesis failed.",
         )

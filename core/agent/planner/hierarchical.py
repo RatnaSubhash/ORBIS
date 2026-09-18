@@ -19,10 +19,17 @@ from core.agent.models import (
     TaskType,
 )
 from core.agent.planner.base import BasePlanner
+from core.agent.planner.classifier import (
+    CapabilityClass,
+    classify_capability,
+    extract_project_assistance_metadata,
+    is_ambiguous_or_malformed,
+)
 from core.agent.planner.validator import PlanValidator
 from core.continuity.service import ContinuityService
 from core.tools.registry import ToolRegistry
 from core.types import RiskLevel
+
 
 logger = logging.getLogger("orbis.agent.planner")
 
@@ -166,6 +173,75 @@ def is_ambiguous_or_malformed_query(prompt: str) -> Tuple[bool, Optional[str]]:
     return False, None
 
 
+ORBIS_CAPABILITIES_SUMMARY = (
+    "I am ORBIS, an autonomous desktop assistant. I can research topics online, "
+    "inspect workspace files, create documents, run terminal commands, "
+    "inspect desktop applications, and interact hands-free using local voice."
+)
+
+
+def is_capabilities_query(prompt: str) -> bool:
+    """
+    Deterministically detects whether a user prompt represents an
+    ABOUT_ORBIS_CAPABILITIES intent.
+    Handles natural language variations, contractions, informal phrasing,
+    and Indian-English syntactic patterns without relying on an exhaustive
+    hardcoded phrase list.
+    """
+    if not prompt or not prompt.strip():
+        return False
+
+    cleaned = prompt.strip().lower()
+    # Strip common leading greetings/vocatives: "orbis,", "hey orbis", "hi", "hello"
+    cleaned = re.sub(r"^(?:hey|hi|hello)?\s*(?:orbis)?\s*[,:\-]?\s*", "", cleaned).strip()
+    # Normalize "u" -> "you", "ur" -> "your"
+    cleaned = re.sub(r"\bu\b", "you", cleaned)
+    cleaned = re.sub(r"\bur\b", "your", cleaned)
+    # Strip trailing punctuation
+    cleaned = cleaned.rstrip(".?! \t\r\n")
+
+    # Pattern A: Direct queries about capabilities/features/skills
+    # e.g., "what are your capabilities", "your capabilities", "tell me your features"
+    if re.search(r"\b(?:your|orbis(?:'s)?)\s+(?:capabilities|features|skills|functions|abilities)\b", cleaned):
+        return True
+
+    # Pattern B: "What ... (can/do) you do" with optional quantifier ("all", "are the things", etc.)
+    # Matches:
+    # "what do you do", "what can you do", "what all can you do", "what all you can do",
+    # "what are the things you can do", "what you can do", "what you can do for me",
+    # "what are you able to do"
+    if re.search(
+        r"\bwhat\s+(?:all\s+)?(?:are\s+the\s+things\s+)?(?:(?:can|do|could)\s+you|you\s+can)\s+(?:do|help|assist|handle|perform)\b",
+        cleaned,
+    ):
+        return True
+
+    # Pattern C: "What can you help (me) with" / "what you can help with"
+    if re.search(r"\bwhat\s+(?:all\s+)?(?:can\s+you|you\s+can)\s+(?:help(?:\s+me)?\s+with|help\b)", cleaned):
+        return True
+
+    # Pattern D: "How can you help (me)" / "how you can help me"
+    if re.search(r"\bhow\s+(?:can\s+you|you\s+can)\s+(?:help|assist)\b", cleaned):
+        return True
+
+    # Pattern E: "Tell/show/explain to me what you can do / how you can help"
+    if re.search(
+        r"\b(?:tell|show|explain)\s+(?:to\s+)?me\s+(?:what|how)\s+(?:you|orbis)\s+(?:can\s+do|do|can\s+help)\b",
+        cleaned,
+    ):
+        return True
+
+    # Pattern F: "What are you able to do" / "what are you capable of"
+    if re.search(r"\bwhat\s+are\s+you\s+(?:able\s+to\s+do|capable\s+of)\b", cleaned):
+        return True
+
+    # Pattern G: "what do you do" / "what does orbis do"
+    if re.search(r"\bwhat\s+does?\s+(?:you|orbis)\s+do\b", cleaned):
+        return True
+
+    return False
+
+
 class HierarchicalPlanner(BasePlanner):
     """
     Constructs and refines hierarchical task execution plans.
@@ -175,146 +251,111 @@ class HierarchicalPlanner(BasePlanner):
     def __init__(self, llm_provider: Optional[BaseLLMProvider] = None) -> None:
         self.llm_provider = llm_provider
 
-    async def plan(self, request: AgentRequest, tool_registry: ToolRegistry) -> TaskPlan:
+    async def plan(self, request: Any, tool_registry: Any = None) -> TaskPlan:
         """
-        Decomposes an AgentRequest into a validated TaskPlan.
-        Prioritizes deterministic templates; falls back to optional LLM if provided.
+        Decomposes an AgentRequest or prompt string into a validated TaskPlan via capability classification.
+        Routes requests based on request type rather than hardcoded entity/topic whitelists.
         """
-        prompt = request.user_prompt.strip()
+        if isinstance(request, str):
+            request = AgentRequest(user_prompt=request)
+        if tool_registry is None or not hasattr(tool_registry, "get"):
+            from core.tools.registry import create_default_tool_registry
+            tool_registry = create_default_tool_registry()
 
-        # 1. Check for Intent Continuity Request (Phase 9 ICE)
-        if ContinuityService.is_intent_query(prompt) and (
-            tool_registry.get("intent_continuity") is not None
-            or tool_registry.get("intent_continuity_tool") is not None
+        prompt = request.user_prompt.strip()
+        lower_prompt = prompt.lower()
+
+        # Explicit echo / spoken message command
+        if lower_prompt.startswith("echo ") or lower_prompt.startswith("say "):
+            return self._plan_echo_task(request, tool_registry)
+
+        cap = classify_capability(prompt)
+
+        # 1. Ambiguous / Malformed input
+        if cap == CapabilityClass.UNKNOWN_AMBIGUOUS:
+            is_ambig, clarification_msg = is_ambiguous_or_malformed(prompt)
+            if is_ambig:
+                return self._plan_clarification_task(
+                    request, tool_registry, clarification_msg or "Could you please clarify what you would like to know?"
+                )
+            return self._plan_default_fallback(request, tool_registry)
+
+        # 2. Capabilities overview (ABOUT_ORBIS_CAPABILITIES)
+        if cap == CapabilityClass.ABOUT_ORBIS_CAPABILITIES:
+            return self._plan_capabilities_task(request, tool_registry)
+
+        # 3. Real-Time Utility (System Time, Date, Environment)
+        if cap == CapabilityClass.REAL_TIME_UTILITY:
+            if tool_registry.get("system") is not None or tool_registry.get("system_tool") is not None:
+                return self._plan_system_utility_task(request, tool_registry)
+
+        # 4. Intent & Workspace Continuity
+        if cap == CapabilityClass.INTENT_CONTINUITY and (
+            tool_registry.get("intent_continuity") is not None or tool_registry.get("intent_continuity_tool") is not None
         ):
             return self._plan_intent_continuity_task(request, tool_registry)
 
-        # 2. Check for Descriptive Continuity Request (Phase 5)
-        if ContinuityService.is_continuity_query(prompt):
+        if cap == CapabilityClass.WORKSPACE_CONTINUITY:
             return self._plan_continuity_task(request, tool_registry)
 
-        lower_prompt = prompt.lower()
-
-        # Check for Workspace Restoration Request (Phase 10)
-        if (
-            ("restore" in lower_prompt or "reopen" in lower_prompt)
-            and ("workspace" in lower_prompt or "windows" in lower_prompt or "layout" in lower_prompt or "session" in lower_prompt or "apps" in lower_prompt)
-            and tool_registry.get("restoration_tool") is not None
-        ):
+        # 5. Workspace Restoration
+        if cap == CapabilityClass.WORKSPACE_RESTORATION and tool_registry.get("restoration_tool") is not None:
             return self._plan_restoration_task(request, tool_registry)
 
-        # Ambiguity Check: Do not guess or search when transcript contains obviously malformed or ambiguous entity
-        is_ambiguous, clarification_msg = is_ambiguous_or_malformed_query(prompt)
-        if is_ambiguous and clarification_msg:
-            return self._plan_clarification_task(request, tool_registry, clarification_msg)
+        # 6. Project Assistance (Genuine Advisory Planning via KnowledgeTool)
+        if cap == CapabilityClass.PROJECT_ASSISTANCE:
+            return self._plan_project_assistance_knowledge_task(request, tool_registry)
 
-        # Document creation intent signals
-        has_creation_verb = any(
-            v in lower_prompt
-            for v in ("create", "write", "generate", "make", "save", "produce", "compile", "draft", "prepare")
-        )
-        has_doc_target = any(
-            t in lower_prompt
-            for t in (
-                "report", "document", "readme", "markdown", ".md", ".txt", "text file",
-                "file", "study notes", "notes", "recommendations", "recommendation"
-            )
-        )
-        has_doc_creation_intent = has_creation_verb and has_doc_target
+        # 7. Document Generation & File Creation Pipelines
+        if cap == CapabilityClass.DOCUMENT_GENERATION:
+            if (
+                tool_registry.get("web_research") is not None
+                and tool_registry.get("content_generator") is not None
+                and tool_registry.get("document") is not None
+            ):
+                return self._plan_research_and_document_task(request, tool_registry)
 
-        has_research_signals = any(
-            r in lower_prompt
-            for r in (
-                "search", "research", "find online", "lookup online", "lookup", "explore",
-                "investigate", "compare", "find three", "find 3", "find some", "find good",
-                "good computer network", "good project ideas"
-            )
-        ) or bool(re.search(r"\bfind\s+(?:\w+\s+)*(?:ideas|options|projects|topics|information)\b", lower_prompt))
+        if cap == CapabilityClass.FILE_CREATION:
+            if tool_registry.get("content_generator") is not None and tool_registry.get("document") is not None:
+                return self._plan_document_creation_task(request, tool_registry)
 
-        # 2. Check for Research + Document Creation Pipeline (Phase 8 Multi-Step Pipeline)
-        if (
-            has_doc_creation_intent
-            and has_research_signals
-            and tool_registry.get("web_research") is not None
-            and tool_registry.get("content_generator") is not None
-            and tool_registry.get("document") is not None
-        ):
-            return self._plan_research_and_document_task(request, tool_registry)
-
-        # 3. Check for Direct Document Creation Pipeline (Phase 8 Document Generation)
-        if (
-            has_doc_creation_intent
-            and tool_registry.get("content_generator") is not None
-            and tool_registry.get("document") is not None
-        ):
-            return self._plan_document_creation_task(request, tool_registry)
-
-        # 4. Check for Web Research, Freshness/Temporal Query, or Office-Holder Pattern (Phase 7 & Phase 11.5)
-        has_explicit_web = (
-            "search" in lower_prompt
-            or "web" in lower_prompt
-            or "research" in lower_prompt
-            or "lookup online" in lower_prompt
-            or "find online" in lower_prompt
-        )
-        has_temporal_signal = bool(
-            re.search(r"\b(latest|current|today|recently|news|current version|currently)\b", lower_prompt)
-        )
-        has_office_holder_signal = bool(
-            re.search(
-                r"\bwho(?:'s|\s+is)\s+(?:the\s+)?(?:\w+\s+)*(minister|president|ceo|cto|cfo|governor|mayor|chancellor)\b",
-                lower_prompt,
-            )
-        )
-        is_local_system_query = any(
-            term in lower_prompt
-            for term in ("git", "pytest", "terminal", "directory", "folder", "desktop", "window", "process")
-        )
-
-        if (
-            (has_explicit_web or ((has_temporal_signal or has_office_holder_signal) and not is_local_system_query))
-            and tool_registry.get("web_research") is not None
-        ):
-            return self._plan_web_research_task(request, tool_registry)
-
-        # 5. Check for Terminal Command Pattern (Phase 7)
-        if (
-            ("git" in lower_prompt or "pytest" in lower_prompt or "terminal" in lower_prompt or "run test" in lower_prompt or "run the test" in lower_prompt)
-            and tool_registry.get("terminal") is not None
-        ):
+        # 8. Terminal Commands
+        if cap == CapabilityClass.TERMINAL_COMMANDS and tool_registry.get("terminal") is not None:
             return self._plan_terminal_task(request, tool_registry)
 
-        # 6. Check for Workspace File Listing Pattern (Issue B)
-        if (
-            ("file" in lower_prompt or "directory" in lower_prompt or "folder" in lower_prompt)
-            and ("check" in lower_prompt or "list" in lower_prompt or "show" in lower_prompt or "see" in lower_prompt or "view" in lower_prompt or "what" in lower_prompt)
-            and ("workspace" in lower_prompt or "project" in lower_prompt or "repo" in lower_prompt or "here" in lower_prompt or "root" in lower_prompt)
-            and tool_registry.get("file") is not None
-        ):
+        # 9. Workspace Inspection (File Listing)
+        if cap == CapabilityClass.WORKSPACE_INSPECTION and tool_registry.get("file") is not None:
             return self._plan_workspace_file_list(request, tool_registry)
 
-        # 7. Check for File Locate + Read + Summarize Pattern
-        # Strictly for reading/summarizing an existing file, never when creating a file
-        if (
-            ("readme" in lower_prompt or "file" in lower_prompt or "summary" in lower_prompt)
-            and ("find" in lower_prompt or "locate" in lower_prompt or "read" in lower_prompt or "prepare" in lower_prompt)
-            and not has_creation_verb
-            and tool_registry.get("file") is not None
-        ):
+        # 10. File Reading / Summarization
+        if cap == CapabilityClass.FILE_READING and tool_registry.get("file") is not None:
             return self._plan_file_summary_hierarchy(request, tool_registry)
 
-        # 8. Check for Desktop Inspection Pattern (Issue C)
-        if (
-            ("desktop" in lower_prompt or "window" in lower_prompt or "process" in lower_prompt or "application" in lower_prompt or "app am i" in lower_prompt or "what am i using" in lower_prompt or "active window" in lower_prompt)
-            and (tool_registry.get("desktop") is not None or tool_registry.get("desktop_tool") is not None)
+        # 11. Desktop Inspection
+        if cap == CapabilityClass.DESKTOP_INSPECTION and (
+            tool_registry.get("desktop") is not None or tool_registry.get("desktop_tool") is not None
         ):
             return self._plan_desktop_inspection(request, tool_registry)
 
-        # 9. Check for Echo / Message Pattern
-        if "echo" in lower_prompt or "say" in lower_prompt:
+        # 12. Fresh Information / Web Research
+        if cap == CapabilityClass.FRESH_INFORMATION and tool_registry.get("web_research") is not None:
+            return self._plan_web_research_task(request, tool_registry)
+
+        # 13. Technical Explanations & Comparisons
+        if cap == CapabilityClass.TECHNICAL_EXPLANATION:
+            is_comp = any(w in lower_prompt for w in ("compare", "versus", "vs", "difference", "differ"))
+            mode = "comparison" if is_comp else "explanation"
+            return self._plan_knowledge_task(request, tool_registry, mode=mode)
+
+        # 14. General Information & Factual Questions
+        if cap == CapabilityClass.GENERAL_INFORMATION:
+            return self._plan_knowledge_task(request, tool_registry, mode="factual")
+
+        # 15. Echo / Message Pattern
+        if lower_prompt.startswith("echo ") or lower_prompt.startswith("say "):
             return self._plan_echo_task(request, tool_registry)
 
-        # 5. Optional LLM Plan Generation (Refinement 1: strictly optional)
+        # 16. Optional LLM Plan Generation
         if self.llm_provider is not None:
             try:
                 llm_plan = await self._plan_with_llm(request, tool_registry)
@@ -323,8 +364,9 @@ class HierarchicalPlanner(BasePlanner):
             except Exception as e:
                 logger.warning("LLM planning failed or was rejected: %s", e)
 
-        # 6. Default Fallback Plan
+        # 17. Default Fallback Plan
         return self._plan_default_fallback(request, tool_registry)
+
 
     async def replan(
         self,
@@ -909,23 +951,24 @@ class HierarchicalPlanner(BasePlanner):
         PlanValidator.validate_plan_or_raise(plan, tool_registry=tool_registry)
         return plan
 
-    def _plan_default_fallback(
+    def _plan_capabilities_task(
         self, request: AgentRequest, tool_registry: ToolRegistry
     ) -> TaskPlan:
-        """Fallback for requests that don't match explicit patterns."""
+        """
+        Plans a single-step direct answer returning ORBIS's actual currently
+        available capabilities for the ABOUT_ORBIS_CAPABILITIES intent.
+        """
         echo_tool = tool_registry.get("echo") or tool_registry.get("echo_tool")
         if echo_tool is None:
-            raise ValueError(
-                "No suitable tool found to satisfy request and no safe echo fallback is registered in the tool registry."
-            )
+            raise ValueError("Echo tool required for capabilities response.")
 
-        step_id = "step_default"
+        step_id = "step_capabilities"
         step = TaskStep(
             step_id=step_id,
-            title="Execute default action",
-            description="Fallback single step execution.",
+            title="Describe ORBIS Capabilities",
+            description="Provides a concise, natural overview of currently available ORBIS capabilities.",
             tool_name=echo_tool.name,
-            parameters={"message": request.user_prompt},
+            parameters={"message": ORBIS_CAPABILITIES_SUMMARY},
             dependencies=[],
             state=TaskState.READY,
             risk_level=echo_tool.risk_level,
@@ -940,6 +983,238 @@ class HierarchicalPlanner(BasePlanner):
         )
         PlanValidator.validate_plan_or_raise(plan, tool_registry=tool_registry)
         return plan
+
+    def _plan_system_utility_task(
+        self, request: AgentRequest, tool_registry: ToolRegistry
+    ) -> TaskPlan:
+        """Constructs a plan for real-time system utility operations (time, date, host info)."""
+        sys_tool = (
+            tool_registry.get("system")
+            or tool_registry.get("system_tool")
+            or tool_registry.get_or_raise("system")
+        )
+        prompt = request.user_prompt
+        lower = prompt.lower()
+
+        if any(w in lower for w in ("date", "day is it")):
+            action = "get_current_date"
+        elif any(w in lower for w in ("system info", "host info", "os")):
+            action = "get_system_info"
+        else:
+            action = "get_current_time"
+
+        # Extract optional timezone from prompt e.g. "in Chennai", "in London", "in UTC", "in IST"
+        tz = None
+        tz_match = re.search(r"\bin\s+([a-zA-Z\s/_]+?)[?.!]?$", prompt)
+        if tz_match:
+            candidate = tz_match.group(1).strip()
+            if candidate.lower() not in ("the morning", "the evening", "the afternoon", "the world"):
+                tz = candidate
+
+        step_id = "step_system_utility"
+        step = TaskStep(
+            step_id=step_id,
+            title=f"System Utility ({action})",
+            description="Retrieves local system time, date, or environment metadata.",
+            tool_name=sys_tool.name,
+            parameters={"action": action, "timezone": tz},
+            dependencies=[],
+            state=TaskState.READY,
+            risk_level=sys_tool.risk_level,
+        )
+
+        plan = TaskPlan(
+            request_id=request.request_id,
+            user_prompt=request.user_prompt,
+            task_type=TaskType.SINGLE_STEP,
+            root_step_ids=[step_id],
+            steps={step_id: step},
+        )
+        PlanValidator.validate_plan_or_raise(plan, tool_registry=tool_registry)
+        return plan
+
+    def _plan_knowledge_task(
+        self, request: AgentRequest, tool_registry: ToolRegistry, mode: str = "factual"
+    ) -> TaskPlan:
+        """Constructs a plan for knowledge synthesis using the registered KnowledgeTool."""
+        know_tool = tool_registry.get("knowledge") or tool_registry.get("knowledge_tool")
+        if know_tool is None:
+            # Offline / fallback compatibility: check direct explanation if available
+            direct = self._plan_direct_explanation(request, tool_registry)
+            if direct is not None:
+                return direct
+            echo_tool = tool_registry.get("echo") or tool_registry.get("echo_tool")
+            if echo_tool:
+                step_id = "step_knowledge"
+                step = TaskStep(
+                    step_id=step_id,
+                    title=f"Knowledge Synthesis ({mode})",
+                    description="Knowledge tool unavailable; returning guidance.",
+                    tool_name=echo_tool.name,
+                    parameters={"message": f"Knowledge tool is not registered to answer: '{request.user_prompt}'."},
+                    dependencies=[],
+                    state=TaskState.READY,
+                    risk_level=echo_tool.risk_level,
+                )
+                plan = TaskPlan(
+                    request_id=request.request_id,
+                    user_prompt=request.user_prompt,
+                    task_type=TaskType.SINGLE_STEP,
+                    root_step_ids=[step_id],
+                    steps={step_id: step},
+                )
+                PlanValidator.validate_plan_or_raise(plan, tool_registry=tool_registry)
+                return plan
+            raise ValueError("Knowledge tool required for general information.")
+
+        step_id = "step_knowledge_synthesis"
+        step = TaskStep(
+            step_id=step_id,
+            title=f"Knowledge Synthesis ({mode})",
+            description="Synthesizes factual knowledge, conceptual explanation, or comparison.",
+            tool_name=know_tool.name,
+            parameters={"query": request.user_prompt.strip(), "mode": mode},
+            dependencies=[],
+            state=TaskState.READY,
+            risk_level=know_tool.risk_level,
+        )
+
+        plan = TaskPlan(
+            request_id=request.request_id,
+            user_prompt=request.user_prompt,
+            task_type=TaskType.SINGLE_STEP,
+            root_step_ids=[step_id],
+            steps={step_id: step},
+        )
+        PlanValidator.validate_plan_or_raise(plan, tool_registry=tool_registry)
+        return plan
+
+    def _plan_project_assistance_knowledge_task(
+        self, request: AgentRequest, tool_registry: ToolRegistry
+    ) -> TaskPlan:
+        """Constructs a plan for project advisory and structured guidance using KnowledgeTool."""
+        intent, subject = extract_project_assistance_metadata(request.user_prompt)
+        know_tool = tool_registry.get("knowledge") or tool_registry.get("knowledge_tool")
+        if know_tool is not None:
+            step_id = "step_project_assistance"
+            step = TaskStep(
+                step_id=step_id,
+                title="Project Assistance Advisory",
+                description="Provides actionable advisory planning and suggestions for user project.",
+                tool_name=know_tool.name,
+                parameters={
+                    "query": subject,
+                    "subject": subject,
+                    "intent": intent,
+                    "mode": "project_assistance",
+                },
+                dependencies=[],
+                state=TaskState.READY,
+                risk_level=know_tool.risk_level,
+            )
+            plan = TaskPlan(
+                request_id=request.request_id,
+                user_prompt=request.user_prompt,
+                task_type=TaskType.SINGLE_STEP,
+                root_step_ids=[step_id],
+                steps={step_id: step},
+            )
+            PlanValidator.validate_plan_or_raise(plan, tool_registry=tool_registry)
+            return plan
+
+        # Fallback if knowledge tool is not in registry
+        return self._plan_project_assistance_task(request, tool_registry, subject)
+
+    def _plan_project_assistance_task(
+        self, request: AgentRequest, tool_registry: ToolRegistry, project_topic: str
+    ) -> TaskPlan:
+        """
+        Plans structured assistance for a user project request (e.g., 'help me with a computer networks project').
+        Provides actionable project support without prompt echoing or misclassifying as definition.
+        """
+        echo_tool = tool_registry.get("echo") or tool_registry.get("echo_tool")
+        if echo_tool is None:
+            raise ValueError("Echo tool required for project assistance.")
+
+        assistance_message = (
+            f"I can help you with your {project_topic}. I can research project ideas, architectures, and protocols online, "
+            "draft project documentation and notes, inspect and manage files in your workspace, and run tests or commands "
+            "in the terminal. What specific part or feature of the project would you like to focus on?"
+        )
+
+        step_id = "step_project_assistance"
+        step = TaskStep(
+            step_id=step_id,
+            title="Provide Project Assistance Guidance",
+            description=f"Outlines actionable assistance options for '{project_topic}'.",
+            tool_name=echo_tool.name,
+            parameters={"message": assistance_message},
+            dependencies=[],
+            state=TaskState.READY,
+            risk_level=echo_tool.risk_level,
+        )
+
+        plan = TaskPlan(
+            request_id=request.request_id,
+            user_prompt=request.user_prompt,
+            task_type=TaskType.SINGLE_STEP,
+            root_step_ids=[step_id],
+            steps={step_id: step},
+        )
+        PlanValidator.validate_plan_or_raise(plan, tool_registry=tool_registry)
+        return plan
+
+    def _plan_default_fallback(
+        self, request: AgentRequest, tool_registry: ToolRegistry
+    ) -> TaskPlan:
+        """Fallback for requests that don't match explicit patterns."""
+        echo_tool = tool_registry.get("echo") or tool_registry.get("echo_tool")
+        if echo_tool is None:
+            raise ValueError(
+                "No suitable tool found to satisfy request and no safe echo fallback is registered in the tool registry."
+            )
+
+        step_id = "step_default"
+        fallback_msg = (
+            "I received your request, but cannot determine a specific action. "
+            "You can ask me what I can do, ask questions about technical concepts, "
+            "or ask me to search the web, manage workspace files, and run terminal commands."
+        )
+        step = TaskStep(
+            step_id=step_id,
+            title="Conversational Clarification",
+            description="Provides safe conversational guidance for unrecognized requests.",
+            tool_name=echo_tool.name,
+            parameters={"message": fallback_msg},
+            dependencies=[],
+            state=TaskState.READY,
+            risk_level=echo_tool.risk_level,
+        )
+
+        plan = TaskPlan(
+            request_id=request.request_id,
+            user_prompt=request.user_prompt,
+            task_type=TaskType.SINGLE_STEP,
+            root_step_ids=[step_id],
+            steps={step_id: step},
+        )
+        PlanValidator.validate_plan_or_raise(plan, tool_registry=tool_registry)
+        return plan
+
+
+    def _plan_direct_explanation(
+        self, request: AgentRequest, tool_registry: ToolRegistry
+    ) -> Optional[TaskPlan]:
+        """
+        Legacy direct explanation helper. Conceptual questions and technical explanations
+        are now authoritatively handled by KnowledgeTool with deterministic grounding
+        or real LLM execution (Condition 1).
+        """
+        know_tool = tool_registry.get("knowledge") or tool_registry.get("knowledge_tool")
+        if know_tool is not None:
+            return self._plan_knowledge_task(request, tool_registry, mode="explanation")
+        return None
+
 
     def _extract_document_metadata(self, prompt: str) -> tuple[str, str, str, str]:
         """
