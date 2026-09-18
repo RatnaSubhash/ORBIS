@@ -25,44 +25,11 @@ import {
   connectTaskWebSocket,
 } from '../api/gateway';
 import { OrbisGlobe } from './core/OrbisGlobe';
-
-// ─── ORBIS state derivation ───────────────────────────────────────────────────
-
-/**
- * Maps gateway task status strings to ORBIS operational states.
- * @param {string} taskStatus
- * @param {boolean} gatewayOnline
- * @returns {'idle'|'listening'|'thinking'|'responding'|'executing'}
- */
-function deriveOrbisState(taskStatus, gatewayOnline) {
-  if (!gatewayOnline) return 'idle';
-  switch (taskStatus) {
-    case 'SUBMITTING':
-    case 'ACCEPTED':
-      return 'listening';
-    case 'RUNNING':
-    case 'IN_PROGRESS':
-      return 'thinking';
-    case 'COMPLETED':
-      return 'responding';
-    case 'BLOCKED_PENDING_APPROVAL':
-      return 'executing';
-    case 'FAILED':
-    case 'IDLE':
-    default:
-      return 'idle';
-  }
-}
-
-// ─── Status label ─────────────────────────────────────────────────────────────
-
-const STATUS_LABELS = {
-  idle: 'Ready',
-  listening: 'Listening',
-  thinking: 'Thinking',
-  responding: 'Responding',
-  executing: 'Executing',
-};
+import {
+  STATUS_LABELS,
+  resolveVisualState,
+  TaskSettleTimer,
+} from '../state/visualState';
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
@@ -78,15 +45,24 @@ export function OrbisCore() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState(null);
 
+  // Visual presentation state (subordinate to AgentEvent lifecycle)
+  const [visualState, setVisualState] = useState('idle');
+
   // Interaction state
   const [inputFocused, setInputFocused] = useState(false);
 
-  // Ref-based deduplication
+  // Refs for task boundaries and deduplication
   const seenEventIdsRef = useRef(new Set());
   const wsCleanupRef = useRef(null);
+  const currentTaskIdRef = useRef(null);
+  const visualStateRef = useRef('idle');
+  const settleTimerRef = useRef(null);
 
-  // Derive the ORBIS visual state
-  const orbisState = deriveOrbisState(taskStatus, gatewayOnline);
+  // Keep ref synchronized for immediate callback checks
+  visualStateRef.current = visualState;
+
+  // Derive the ORBIS visual state (falls back to idle if gateway is offline)
+  const orbisState = gatewayOnline ? visualState : 'idle';
 
   // ── Gateway health polling ────────────────────────────────────────────────
   useEffect(() => {
@@ -102,6 +78,25 @@ export function OrbisCore() {
     verifyHealth();
     const interval = setInterval(verifyHealth, 5000);
     return () => { isMounted = false; clearInterval(interval); };
+  }, []);
+
+  // ── Task settle timer initialization and unmount cleanup ──────────────────
+  useEffect(() => {
+    settleTimerRef.current = new TaskSettleTimer({
+      onSettle: (settledTaskId) => {
+        // Strict task check: only settle if active task still matches the settled task
+        if (currentTaskIdRef.current === settledTaskId || !currentTaskIdRef.current) {
+          setVisualState('idle');
+        }
+      },
+      delay: 1500,
+    });
+
+    return () => {
+      if (settleTimerRef.current) {
+        settleTimerRef.current.cancel();
+      }
+    };
   }, []);
 
   // ── WebSocket cleanup on unmount ──────────────────────────────────────────
@@ -127,6 +122,12 @@ export function OrbisCore() {
     setIsSubmitting(true);
     setTaskStatus('SUBMITTING');
 
+    // Cancel any pending settle timer from previous tasks
+    settleTimerRef.current?.cancel();
+
+    // Entering new task prompt submission -> 'thinking' visual state
+    setVisualState('thinking');
+
     if (wsCleanupRef.current) {
       wsCleanupRef.current();
       wsCleanupRef.current = null;
@@ -135,6 +136,7 @@ export function OrbisCore() {
     try {
       const submitRes = await submitTask(prompt, false);
       const taskId = submitRes.task_id;
+      currentTaskIdRef.current = taskId;
       setCurrentTaskId(taskId);
       setTaskStatus(submitRes.status || 'ACCEPTED');
 
@@ -157,16 +159,53 @@ export function OrbisCore() {
           ) {
             setPendingApproval(null);
           }
+
+          // Event-aware visual state resolution
+          const resolution = resolveVisualState(
+            visualStateRef.current,
+            event,
+            currentTaskIdRef.current
+          );
+
+          if (resolution.updated) {
+            // Task boundary or new task detection: cancel any lingering settle timer
+            if (resolution.isNewTask || (resolution.taskId && resolution.taskId !== currentTaskIdRef.current)) {
+              settleTimerRef.current?.cancel();
+              currentTaskIdRef.current = resolution.taskId;
+              setCurrentTaskId(resolution.taskId);
+            }
+            setVisualState(resolution.state);
+
+            // Schedule task-scoped settle timer if entering terminal state
+            if (resolution.needsSettle && resolution.taskId) {
+              settleTimerRef.current?.schedule(resolution.taskId);
+            }
+          }
         },
         onError: () => {
           setErrorMessage('Connection error. Checking status…');
-          getTaskStatus(taskId).then((st) => setTaskStatus(st.status)).catch(() => {});
+          getTaskStatus(taskId)
+            .then((st) => {
+              if (st.status) setTaskStatus(st.status);
+              if (st.status === 'FAILED') {
+                setVisualState('failed');
+                settleTimerRef.current?.schedule(taskId);
+              }
+            })
+            .catch(() => {});
         },
         onClose: () => {
           getTaskStatus(taskId)
             .then((st) => {
               if (st.status) setTaskStatus(st.status);
               if (st.summary) setTaskSummary(st.summary);
+              if (st.status === 'COMPLETED' && visualStateRef.current !== 'completed') {
+                setVisualState('completed');
+                settleTimerRef.current?.schedule(taskId);
+              } else if (st.status === 'FAILED' && visualStateRef.current !== 'failed') {
+                setVisualState('failed');
+                settleTimerRef.current?.schedule(taskId);
+              }
             })
             .catch(() => {});
         },
@@ -175,6 +214,10 @@ export function OrbisCore() {
     } catch (err) {
       setErrorMessage(err.message);
       setTaskStatus('FAILED');
+      setVisualState('failed');
+      if (currentTaskIdRef.current) {
+        settleTimerRef.current?.schedule(currentTaskIdRef.current);
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -193,13 +236,13 @@ export function OrbisCore() {
       </header>
 
       {/* ── Globe — the visual core of ORBIS ── */}
-      <div className="orbis-globe-stage">
+      <div className="orbis-globe-stage" data-state={orbisState}>
         <OrbisGlobe orbisState={orbisState} />
       </div>
 
       {/* ── State label below globe ── */}
       <div className="orbis-state-label" data-state={orbisState}>
-        {STATUS_LABELS[orbisState]}
+        {STATUS_LABELS[orbisState] || STATUS_LABELS.idle}
       </div>
 
       {/* ── Minimal prompt / status ── */}

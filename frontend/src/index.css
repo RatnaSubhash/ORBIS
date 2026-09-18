@@ -120,6 +120,94 @@ body {
   );
   pointer-events: none;
   z-index: 0;
+  transition: background 0.8s ease, transform 0.8s ease, opacity 0.8s ease;
+}
+
+/* State-specific stage auras */
+.orbis-globe-stage[data-state="listening"]::before {
+  background: radial-gradient(ellipse at center, rgba(51, 204, 221, 0.12) 0%, transparent 70%);
+  animation: orbis-listening-pulse 2.8s ease-in-out infinite;
+}
+
+.orbis-globe-stage[data-state="thinking"]::before {
+  background: radial-gradient(ellipse at center, rgba(51, 204, 221, 0.15) 0%, rgba(51, 204, 221, 0.04) 45%, transparent 70%);
+  animation: orbis-thinking-pulse 2.0s ease-in-out infinite;
+}
+
+.orbis-globe-stage[data-state="planning"]::before {
+  background: radial-gradient(ellipse at center, rgba(125, 211, 252, 0.12) 0%, transparent 70%);
+}
+
+.orbis-globe-stage[data-state="planning"]::after {
+  content: '';
+  position: absolute;
+  inset: -14px;
+  border: 1px dashed rgba(51, 204, 221, 0.28);
+  border-radius: 50%;
+  pointer-events: none;
+  animation: orbis-planning-ring 24s linear infinite;
+  z-index: 0;
+}
+
+.orbis-globe-stage[data-state="executing"]::before {
+  background: radial-gradient(ellipse at center, rgba(56, 189, 248, 0.18) 0%, rgba(51, 204, 221, 0.06) 50%, transparent 72%);
+  animation: orbis-executing-pulse 1.8s ease-in-out infinite;
+}
+
+.orbis-globe-stage[data-state="responding"]::before {
+  background: radial-gradient(ellipse at center, rgba(51, 204, 221, 0.16) 0%, transparent 75%);
+  animation: orbis-responding-glow 3s ease-in-out infinite;
+}
+
+.orbis-globe-stage[data-state="completed"]::before {
+  background: radial-gradient(ellipse at center, rgba(16, 185, 129, 0.2) 0%, rgba(51, 204, 221, 0.08) 45%, transparent 70%);
+  animation: orbis-completed-shimmer 1.5s ease-out;
+}
+
+.orbis-globe-stage[data-state="failed"]::before {
+  background: radial-gradient(ellipse at center, rgba(239, 68, 68, 0.14) 0%, transparent 70%);
+}
+
+.orbis-globe-stage[data-state="approval"]::before {
+  background: radial-gradient(ellipse at center, rgba(245, 158, 11, 0.24) 0%, rgba(245, 158, 11, 0.06) 50%, transparent 70%);
+  animation: orbis-approval-hold 3.2s ease-in-out infinite;
+}
+
+/* Keyframe animations for visual states */
+@keyframes orbis-listening-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.7; }
+  50% { transform: scale(1.06); opacity: 1; }
+}
+
+@keyframes orbis-thinking-pulse {
+  0%, 100% { transform: scale(0.97); opacity: 0.8; }
+  50% { transform: scale(1.03); opacity: 1; }
+}
+
+@keyframes orbis-planning-ring {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes orbis-executing-pulse {
+  0%, 100% { transform: scale(1.01); opacity: 0.85; }
+  50% { transform: scale(1.08); opacity: 1; }
+}
+
+@keyframes orbis-responding-glow {
+  0%, 100% { transform: scale(1); opacity: 0.75; }
+  50% { transform: scale(1.05); opacity: 1; }
+}
+
+@keyframes orbis-completed-shimmer {
+  0% { opacity: 0.4; transform: scale(0.95); }
+  50% { opacity: 1; transform: scale(1.05); }
+  100% { opacity: 0.8; transform: scale(1); }
+}
+
+@keyframes orbis-approval-hold {
+  0%, 100% { opacity: 0.8; }
+  50% { opacity: 1; }
 }
 
 .orbis-globe-pulse canvas {
@@ -136,13 +224,18 @@ body {
   letter-spacing: 0.25em;
   text-transform: uppercase;
   color: var(--text-dim);
-  transition: color 0.6s;
+  transition: color 0.4s ease, text-shadow 0.4s ease;
 }
 
-.orbis-state-label[data-state="listening"] { color: var(--accent); }
-.orbis-state-label[data-state="thinking"]  { color: rgba(51,204,221,0.5); }
-.orbis-state-label[data-state="responding"]{ color: var(--accent); }
-.orbis-state-label[data-state="executing"] { color: rgba(245,158,11,0.7); }
+.orbis-state-label[data-state="idle"]        { color: var(--text-dim); }
+.orbis-state-label[data-state="listening"]   { color: var(--accent); text-shadow: 0 0 10px rgba(51,204,221,0.4); }
+.orbis-state-label[data-state="thinking"]    { color: rgba(51,204,221,0.75); }
+.orbis-state-label[data-state="planning"]    { color: #7dd3fc; text-shadow: 0 0 8px rgba(125,211,252,0.3); }
+.orbis-state-label[data-state="executing"]   { color: #38bdf8; text-shadow: 0 0 10px rgba(56,189,248,0.4); }
+.orbis-state-label[data-state="responding"]  { color: var(--accent); text-shadow: 0 0 8px rgba(51,204,221,0.35); }
+.orbis-state-label[data-state="completed"]   { color: var(--success); text-shadow: 0 0 10px rgba(16,185,129,0.4); }
+.orbis-state-label[data-state="failed"]      { color: var(--danger); text-shadow: 0 0 10px rgba(239,68,68,0.3); }
+.orbis-state-label[data-state="approval"]    { color: var(--warn); text-shadow: 0 0 10px rgba(245,158,11,0.5); }
 
 /* ─── Prompt zone ────────────────────────────────────────────────────────── */
 

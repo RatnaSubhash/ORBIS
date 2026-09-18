@@ -15,6 +15,7 @@
 
 import { useMemo } from 'react';
 import { GlobePulse } from './GlobePulse';
+import { STATE_SPEEDS } from '../../state/visualState';
 
 /** Default geographic pulse markers — conceptual "ORBIS nodes". */
 const DEFAULT_MARKERS = [
@@ -25,30 +26,8 @@ const DEFAULT_MARKERS = [
 ];
 
 /**
- * Visual config per ORBIS state.
- * Kept deliberately subtle — no RGB excess.
- */
-const STATE_CONFIG = {
-  idle: {
-    speed: 0.003,
-  },
-  listening: {
-    speed: 0.004,
-  },
-  thinking: {
-    speed: 0.001, // near-pause: suggests concentration
-  },
-  responding: {
-    speed: 0.004,
-  },
-  executing: {
-    speed: 0.005,
-  },
-};
-
-/**
  * @param {{
- *   orbisState?: 'idle' | 'listening' | 'thinking' | 'responding' | 'executing',
+ *   orbisState?: 'idle' | 'listening' | 'thinking' | 'planning' | 'executing' | 'responding' | 'completed' | 'failed' | 'approval',
  *   markers?: Array<{ id: string, location: [number, number], delay: number }>,
  *   className?: string,
  * }} props
@@ -58,16 +37,16 @@ export function OrbisGlobe({
   markers = DEFAULT_MARKERS,
   className = '',
 }) {
-  const config = useMemo(
-    () => STATE_CONFIG[orbisState] ?? STATE_CONFIG.idle,
+  const speed = useMemo(
+    () => STATE_SPEEDS[orbisState] ?? STATE_SPEEDS.idle,
     [orbisState]
   );
 
   return (
     <GlobePulse
       markers={markers}
-      className={`orbis-globe-pulse ${className}`.trim()}
-      speed={config.speed}
+      className={`orbis-globe-pulse orbis-globe-${orbisState} ${className}`.trim()}
+      speed={speed}
     />
   );
 }

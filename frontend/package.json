@@ -11,7 +11,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "test:e2e": "node scripts/verify_e2e_flow.js",
-    "test:electron": "electron scripts/verify_electron_launch.cjs"
+    "test:electron": "electron scripts/verify_electron_launch.cjs",
+    "test:visual": "node scripts/test_visual_state.js"
   },
   "dependencies": {
     "cobe": "^2.0.1",

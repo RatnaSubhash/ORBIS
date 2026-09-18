@@ -21,6 +21,11 @@ export function GlobePulse({
   const phiOffsetRef = useRef(0);
   const thetaOffsetRef = useRef(0);
   const isPausedRef = useRef(false);
+  const speedRef = useRef(speed);
+
+  useEffect(() => {
+    speedRef.current = speed;
+  }, [speed]);
 
   const handlePointerDown = useCallback((e) => {
     pointerInteracting.current = { x: e.clientX, y: e.clientY };
@@ -91,7 +96,7 @@ export function GlobePulse({
       });
 
       function animate() {
-        if (!isPausedRef.current) phi += speed;
+        if (!isPausedRef.current) phi += speedRef.current;
         globe.update({
           phi: phi + phiOffsetRef.current + dragOffset.current.phi,
           theta: 0.2 + thetaOffsetRef.current + dragOffset.current.theta,
@@ -119,7 +124,7 @@ export function GlobePulse({
       if (animationId) cancelAnimationFrame(animationId);
       if (globe) globe.destroy();
     };
-  }, [markers, speed]);
+  }, [markers]);
 
   return (
     <div className={`relative aspect-square select-none ${className}`}>
