@@ -1,19 +1,19 @@
 /* ─── ORBIS Design System ─────────────────────────────────────────────────── */
 
 :root {
-  --bg:            #07090f;
-  --bg-surface:    #0d111c;
-  --bg-input:      #131926;
-  --border:        rgba(255,255,255,0.07);
-  --border-focus:  rgba(51,204,221,0.4);
-  --text-primary:  #e8eaf0;
-  --text-muted:    rgba(232,234,240,0.38);
-  --text-dim:      rgba(232,234,240,0.22);
-  --accent:        #33ccdd;
-  --accent-dim:    rgba(51,204,221,0.18);
-  --danger:        rgba(239,68,68,0.8);
-  --warn:          rgba(245,158,11,0.8);
-  --success:       rgba(16,185,129,0.8);
+  --bg:            #0a0b0e; /* Neutral dark graphite/obsidian matching COBE globe body */
+  --bg-surface:    #111317; /* Elevated neutral dark surface */
+  --bg-input:      #111317;
+  --border:        rgba(255, 255, 255, 0.07);
+  --border-focus:  rgba(51, 204, 221, 0.35); /* Cyan focus ring matching globe marker */
+  --text-primary:  #eef0f4; /* Neutral crisp off-white */
+  --text-muted:    #7c838f; /* Neutral muted grey */
+  --text-dim:      #444a54; /* Neutral dim grey */
+  --accent:        #33ccdd; /* Exact COBE marker cyan/teal [0.2, 0.8, 0.9] */
+  --accent-dim:    rgba(51, 204, 221, 0.12);
+  --danger:        rgba(239, 68, 68, 0.8);
+  --warn:          rgba(245, 158, 11, 0.8);
+  --success:       rgba(16, 185, 129, 0.8);
 
   --globe-size:    min(420px, 72vw);
   --radius-sm:     6px;
@@ -33,7 +33,7 @@ html, body {
 }
 
 body {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family: 'Geist', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   background: var(--bg);
   color: var(--text-primary);
   line-height: 1.5;
@@ -48,6 +48,7 @@ body {
   min-height: 100vh;
   display: flex;
   align-items: stretch;
+  background: var(--bg);
 }
 
 /* ─── OrbisCore ──────────────────────────────────────────────────────────── */
@@ -67,30 +68,121 @@ body {
 /* ─── Identity header ────────────────────────────────────────────────────── */
 
 .orbis-identity {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: center;
   margin-bottom: 48px;
 }
 
 .orbis-wordmark {
+  font-family: inherit;
   font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.3em;
+  font-weight: 500;
+  letter-spacing: 0.22em;
   text-transform: uppercase;
-  color: var(--text-muted);
+  color: var(--text-primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transform-origin: center center;
+  will-change: transform, opacity;
+}
+
+.orbis-wordmark.is-awakening {
+  z-index: 10;
+  transition: opacity 0.5s ease;
+}
+
+.orbis-core.phase-gliding .orbis-wordmark.is-awakening {
+  transition: transform 1.4s cubic-bezier(0.25, 0.1, 0.25, 1.0), opacity 0.5s ease;
+}
+
+/* ─── DecryptedText styling during awakening (Clean & Minimal) ───────────── */
+
+.orbis-decrypted-parent {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  letter-spacing: 0.22em;
+  font-family: inherit;
+  font-weight: 500;
+}
+
+.orbis-decrypted-char {
+  color: var(--text-primary);
+  display: inline;
+}
+
+.orbis-encrypted-char {
+  color: var(--text-dim);
+  display: inline;
 }
 
 .orbis-gateway-dot {
+  position: absolute;
+  left: calc(100% + 10px);
+  top: 50%;
+  transform: translateY(-50%);
   width: 6px;
   height: 6px;
   border-radius: 50%;
   flex-shrink: 0;
-  transition: background 0.4s;
+  transition: background 0.4s, opacity 0.6s ease;
 }
 
 .orbis-gateway-dot.online  { background: var(--success); box-shadow: 0 0 6px var(--success); }
 .orbis-gateway-dot.offline { background: var(--text-dim); }
+
+/* ─── Awakening Sequence visibility & scale orchestration ────────────────── */
+
+.orbis-core.is-awakening .orbis-globe-stage {
+  opacity: 0;
+  transform: scale(0.95);
+  pointer-events: none;
+  transition: opacity 1.4s cubic-bezier(0.25, 0.1, 0.25, 1.0), transform 1.4s cubic-bezier(0.25, 0.1, 0.25, 1.0);
+  will-change: opacity, transform;
+}
+
+.orbis-core.is-awakening.phase-gliding .orbis-globe-stage {
+  opacity: 1;
+  transform: scale(1);
+  pointer-events: auto;
+}
+
+.orbis-core.is-awakening .orbis-state-label,
+.orbis-core.is-awakening .orbis-prompt-zone,
+.orbis-core.is-awakening .orbis-gateway-dot,
+.orbis-core.is-awakening .orbis-event-stream {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 1.2s cubic-bezier(0.25, 0.1, 0.25, 1.0);
+}
+
+.orbis-core.is-awakening.phase-gliding .orbis-state-label,
+.orbis-core.is-awakening.phase-gliding .orbis-prompt-zone,
+.orbis-core.is-awakening.phase-gliding .orbis-gateway-dot,
+.orbis-core.is-awakening.phase-gliding .orbis-event-stream {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .orbis-wordmark.is-awakening {
+    transform: none !important;
+    transition: none !important;
+  }
+  .orbis-core.is-awakening .orbis-globe-stage,
+  .orbis-core.is-awakening .orbis-state-label,
+  .orbis-core.is-awakening .orbis-prompt-zone,
+  .orbis-core.is-awakening .orbis-gateway-dot,
+  .orbis-core.is-awakening .orbis-event-stream {
+    opacity: 1 !important;
+    transform: none !important;
+    pointer-events: auto !important;
+    transition: none !important;
+  }
+}
 
 /* ─── Globe stage ────────────────────────────────────────────────────────── */
 
@@ -108,16 +200,12 @@ body {
   position: relative;
 }
 
-/* Subtle ambient glow behind the globe */
+/* Subtle ambient layer behind the globe (clean, neutral, no idle spotlight) */
 .orbis-globe-stage::before {
   content: '';
   position: absolute;
   inset: -20%;
-  background: radial-gradient(
-    ellipse at center,
-    rgba(51, 204, 221, 0.05) 0%,
-    transparent 70%
-  );
+  background: transparent;
   pointer-events: none;
   z-index: 0;
   transition: background 0.8s ease, transform 0.8s ease, opacity 0.8s ease;

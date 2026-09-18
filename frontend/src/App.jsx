@@ -5,13 +5,15 @@
  * are owned by OrbisCore. App.jsx exists only to mount OrbisCore inside the
  * page-level shell and apply the outermost layout class.
  */
+import { AwakeningSequence } from './components/core/AwakeningSequence';
 import { OrbisCore } from './components/OrbisCore';
-
 
 export function App() {
   return (
     <div className="orbis-app">
-      <OrbisCore />
+      <AwakeningSequence>
+        <OrbisCore />
+      </AwakeningSequence>
     </div>
   );
 }

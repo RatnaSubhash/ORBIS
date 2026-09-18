@@ -25,6 +25,8 @@ import {
   connectTaskWebSocket,
 } from '../api/gateway';
 import { OrbisGlobe } from './core/OrbisGlobe';
+import { useAwakening } from './core/AwakeningSequence';
+import DecryptedText from './ui/DecryptedText';
 import {
   STATUS_LABELS,
   resolveVisualState,
@@ -63,6 +65,25 @@ export function OrbisCore() {
 
   // Derive the ORBIS visual state (falls back to idle if gateway is offline)
   const orbisState = gatewayOnline ? visualState : 'idle';
+
+  // Awakening presentation state
+  const { phase: awakeningPhase, isAwakening, offsetY, wordmarkRef } = useAwakening();
+
+  let wordmarkTransform = 'none';
+  let wordmarkOpacity = 1;
+
+  if (isAwakening) {
+    if (awakeningPhase === 'black') {
+      wordmarkTransform = `translateY(${offsetY}px) scale(3)`;
+      wordmarkOpacity = 0;
+    } else if (awakeningPhase === 'decrypting' || awakeningPhase === 'holding') {
+      wordmarkTransform = `translateY(${offsetY}px) scale(3)`;
+      wordmarkOpacity = 1;
+    } else if (awakeningPhase === 'gliding') {
+      wordmarkTransform = 'translateY(0px) scale(1)';
+      wordmarkOpacity = 1;
+    }
+  }
 
   // ── Gateway health polling ────────────────────────────────────────────────
   useEffect(() => {
@@ -225,11 +246,41 @@ export function OrbisCore() {
 
   // ─── Render ───────────────────────────────────────────────────────────────
   return (
-    <div className="orbis-core">
+    <div className={`orbis-core ${isAwakening ? `is-awakening phase-${awakeningPhase}` : ''}`}>
 
       {/* ── Identity header ── */}
       <header className="orbis-identity">
-        <h1 className="orbis-wordmark">ORBIS</h1>
+        <h1
+          ref={wordmarkRef}
+          className={`orbis-wordmark ${isAwakening ? 'is-awakening' : ''}`}
+          data-phase={awakeningPhase}
+          style={
+            isAwakening
+              ? {
+                  transform: wordmarkTransform,
+                  opacity: wordmarkOpacity,
+                }
+              : undefined
+          }
+        >
+          {isAwakening ? (
+            <DecryptedText
+              text="ORBIS"
+              animateOn="view"
+              sequential
+              revealDirection="center"
+              speed={240}
+              maxIterations={10}
+              characters="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*~"
+              useOriginalCharsOnly={false}
+              className="orbis-decrypted-char"
+              encryptedClassName="orbis-encrypted-char"
+              parentClassName="orbis-decrypted-parent"
+            />
+          ) : (
+            'ORBIS'
+          )}
+        </h1>
         <div className={`orbis-gateway-dot ${gatewayOnline ? 'online' : 'offline'}`}
           title={gatewayOnline ? 'Gateway connected' : 'Gateway offline'}
         />
