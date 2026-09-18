@@ -1,289 +1,370 @@
+/* ─── ORBIS Design System ─────────────────────────────────────────────────── */
+
 :root {
-  --bg-primary: #090d16;
-  --bg-card: #111827;
-  --bg-input: #1f2937;
-  --border-color: #374151;
-  --text-primary: #f3f4f6;
-  --text-secondary: #9ca3af;
-  --accent: #3b82f6;
-  --accent-hover: #2563eb;
-  --status-completed: #10b981;
-  --status-failed: #ef4444;
-  --status-running: #3b82f6;
-  --status-blocked: #f59e0b;
+  --bg:            #07090f;
+  --bg-surface:    #0d111c;
+  --bg-input:      #131926;
+  --border:        rgba(255,255,255,0.07);
+  --border-focus:  rgba(51,204,221,0.4);
+  --text-primary:  #e8eaf0;
+  --text-muted:    rgba(232,234,240,0.38);
+  --text-dim:      rgba(232,234,240,0.22);
+  --accent:        #33ccdd;
+  --accent-dim:    rgba(51,204,221,0.18);
+  --danger:        rgba(239,68,68,0.8);
+  --warn:          rgba(245,158,11,0.8);
+  --success:       rgba(16,185,129,0.8);
+
+  --globe-size:    min(420px, 72vw);
+  --radius-sm:     6px;
+  --radius-md:     10px;
 }
 
-* {
+*,
+*::before,
+*::after {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
 }
 
+html, body {
+  height: 100%;
+}
+
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-  background-color: var(--bg-primary);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--bg);
   color: var(--text-primary);
   line-height: 1.5;
-  padding: 24px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
 }
+
+/* ─── Page shell ─────────────────────────────────────────────────────────── */
 
 .orbis-app {
-  max-width: 900px;
+  min-height: 100vh;
+  display: flex;
+  align-items: stretch;
+}
+
+/* ─── OrbisCore ──────────────────────────────────────────────────────────── */
+
+.orbis-core {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 48px 24px 64px;
+  gap: 0;
+  max-width: 640px;
   margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
+  width: 100%;
 }
 
-.header {
+/* ─── Identity header ────────────────────────────────────────────────────── */
+
+.orbis-identity {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  border-bottom: 1px solid var(--border-color);
-  padding-bottom: 16px;
+  gap: 10px;
+  margin-bottom: 48px;
 }
 
-.header-title h1 {
-  font-size: 1.5rem;
+.orbis-wordmark {
+  font-size: 0.72rem;
   font-weight: 700;
-  letter-spacing: -0.025em;
-  color: #fff;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--text-muted);
 }
 
-.header-title p {
-  font-size: 0.85rem;
-  color: var(--text-secondary);
-}
-
-.gateway-badge {
-  font-size: 0.75rem;
-  font-weight: 600;
-  padding: 4px 10px;
-  border-radius: 9999px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.gateway-badge.online {
-  background: rgba(16, 185, 129, 0.15);
-  color: #34d399;
-  border: 1px solid rgba(16, 185, 129, 0.3);
-}
-
-.gateway-badge.offline {
-  background: rgba(239, 68, 68, 0.15);
-  color: #f87171;
-  border: 1px solid rgba(239, 68, 68, 0.3);
-}
-
-.indicator-dot {
-  width: 7px;
-  height: 7px;
+.orbis-gateway-dot {
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background-color: currentColor;
+  flex-shrink: 0;
+  transition: background 0.4s;
 }
 
-.card {
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  padding: 18px;
+.orbis-gateway-dot.online  { background: var(--success); box-shadow: 0 0 6px var(--success); }
+.orbis-gateway-dot.offline { background: var(--text-dim); }
+
+/* ─── Globe stage ────────────────────────────────────────────────────────── */
+
+.orbis-globe-stage {
+  width: var(--globe-size);
+  height: var(--globe-size);
+  position: relative;
+  flex-shrink: 0;
 }
 
-.prompt-form {
+/* GlobePulse root wrapper must fill the stage */
+.orbis-globe-pulse {
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
+/* Subtle ambient glow behind the globe */
+.orbis-globe-stage::before {
+  content: '';
+  position: absolute;
+  inset: -20%;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(51, 204, 221, 0.05) 0%,
+    transparent 70%
+  );
+  pointer-events: none;
+  z-index: 0;
+}
+
+.orbis-globe-pulse canvas {
+  position: relative;
+  z-index: 1;
+}
+
+/* ─── State label ────────────────────────────────────────────────────────── */
+
+.orbis-state-label {
+  margin-top: 20px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  transition: color 0.6s;
+}
+
+.orbis-state-label[data-state="listening"] { color: var(--accent); }
+.orbis-state-label[data-state="thinking"]  { color: rgba(51,204,221,0.5); }
+.orbis-state-label[data-state="responding"]{ color: var(--accent); }
+.orbis-state-label[data-state="executing"] { color: rgba(245,158,11,0.7); }
+
+/* ─── Prompt zone ────────────────────────────────────────────────────────── */
+
+.orbis-prompt-zone {
+  width: 100%;
+  max-width: 480px;
+  margin-top: 40px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-}
-
-.input-row {
-  display: flex;
   gap: 10px;
 }
 
-.prompt-input {
-  flex: 1;
+.orbis-form {
+  width: 100%;
+}
+
+.orbis-input-wrap {
+  display: flex;
+  align-items: center;
   background: var(--bg-input);
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  padding: 10px 14px;
-  font-size: 0.95rem;
-  color: #fff;
-  outline: none;
-  transition: border-color 0.15s;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  transition: border-color 0.2s, box-shadow 0.2s;
+  overflow: hidden;
 }
 
-.prompt-input:focus {
-  border-color: var(--accent);
+.orbis-input-wrap.focused {
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px rgba(51,204,221,0.08);
 }
 
-.prompt-input:disabled {
-  opacity: 0.6;
-}
-
-.submit-btn {
-  background: var(--accent);
-  color: #fff;
+.orbis-input {
+  flex: 1;
+  background: transparent;
   border: none;
-  border-radius: 6px;
-  padding: 10px 20px;
+  outline: none;
+  padding: 12px 16px;
   font-size: 0.9rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background-color 0.15s;
-  white-space: nowrap;
+  color: var(--text-primary);
+  font-family: inherit;
+  min-width: 0;
 }
 
-.submit-btn:hover:not(:disabled) {
-  background: var(--accent-hover);
+.orbis-input::placeholder {
+  color: var(--text-dim);
 }
 
-.submit-btn:disabled {
+.orbis-input:disabled {
   opacity: 0.5;
+}
+
+.orbis-submit {
+  flex-shrink: 0;
+  width: 42px;
+  height: 42px;
+  background: transparent;
+  border: none;
+  border-left: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 1.1rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, background 0.15s;
+}
+
+.orbis-submit:hover:not(:disabled) {
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.orbis-submit:disabled {
+  opacity: 0.3;
   cursor: not-allowed;
 }
 
-.status-bar {
+/* ─── Status row ─────────────────────────────────────────────────────────── */
+
+.orbis-status-row {
   display: flex;
-  justify-content: space-between;
+  gap: 12px;
   align-items: center;
-  font-size: 0.85rem;
-  margin-top: 6px;
-  color: var(--text-secondary);
+  flex-wrap: wrap;
+  min-height: 18px;
 }
 
-.status-tag {
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 0.75rem;
+.orbis-task-id {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  letter-spacing: 0.05em;
 }
 
-.status-tag.COMPLETED {
-  background: rgba(16, 185, 129, 0.15);
-  color: var(--status-completed);
+.orbis-summary {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.status-tag.RUNNING, .status-tag.IN_PROGRESS, .status-tag.ACCEPTED {
-  background: rgba(59, 130, 246, 0.15);
-  color: var(--status-running);
+/* ─── Error ──────────────────────────────────────────────────────────────── */
+
+.orbis-error {
+  font-size: 0.8rem;
+  color: var(--danger);
+  padding: 8px 12px;
+  background: rgba(239,68,68,0.08);
+  border: 1px solid rgba(239,68,68,0.2);
+  border-radius: var(--radius-sm);
 }
 
-.status-tag.FAILED {
-  background: rgba(239, 68, 68, 0.15);
-  color: var(--status-failed);
-}
+/* ─── Approval notice ────────────────────────────────────────────────────── */
 
-.status-tag.BLOCKED_PENDING_APPROVAL {
-  background: rgba(245, 158, 11, 0.15);
-  color: var(--status-blocked);
-}
-
-.approval-banner {
-  background: rgba(245, 158, 11, 0.12);
-  border: 1px solid rgba(245, 158, 11, 0.35);
-  border-radius: 6px;
-  padding: 12px 14px;
-  color: #fbbf24;
-  font-size: 0.88rem;
+.orbis-approval-notice {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  padding: 12px 14px;
+  background: rgba(245,158,11,0.07);
+  border: 1px solid rgba(245,158,11,0.25);
+  border-radius: var(--radius-sm);
+  font-size: 0.82rem;
+  color: rgba(245,158,11,0.9);
 }
 
-.approval-banner strong {
-  color: #fef3c7;
-}
-
-.events-section {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.events-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.events-header h2 {
-  font-size: 1.05rem;
+.orbis-approval-notice strong {
   font-weight: 600;
+  color: rgba(254,243,199,0.9);
 }
 
-.event-count {
-  font-size: 0.8rem;
-  color: var(--text-secondary);
+.orbis-approval-notice code {
+  font-size: 0.75rem;
+  color: rgba(245,158,11,0.7);
+  font-family: monospace;
 }
 
-.events-list {
+/* ─── Event stream ───────────────────────────────────────────────────────── */
+
+.orbis-event-stream {
+  width: 100%;
+  max-width: 480px;
+  margin-top: 32px;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: 400px;
+}
+
+.orbis-event-stream-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.orbis-event-count {
+  font-variant-numeric: tabular-nums;
+}
+
+.orbis-event-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 340px;
   overflow-y: auto;
   padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
 }
 
-.event-item {
+.orbis-event {
+  padding: 10px 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   display: flex;
   flex-direction: column;
   gap: 4px;
-  background: var(--bg-input);
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  padding: 10px 14px;
-  font-size: 0.85rem;
+  font-size: 0.82rem;
 }
 
-.event-meta {
+.orbis-event-meta {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 0.75rem;
 }
 
-.event-type-badge {
-  font-family: monospace;
-  font-weight: 600;
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.08);
-  color: #93c5fd;
-}
-
-.event-time {
-  color: var(--text-secondary);
-}
-
-.event-risk {
-  margin-left: auto;
-  font-weight: 600;
+.orbis-event-type {
+  font-family: 'SF Mono', 'Fira Code', monospace;
   font-size: 0.7rem;
+  font-weight: 600;
+  color: rgba(51,204,221,0.7);
+  background: rgba(51,204,221,0.08);
+  padding: 2px 6px;
+  border-radius: 3px;
 }
 
-.event-risk.LOW { color: #34d399; }
-.event-risk.MEDIUM { color: #fbbf24; }
-.event-risk.HIGH { color: #f87171; }
-
-.event-message {
-  color: #e5e7eb;
+.orbis-event-time {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  margin-left: auto;
 }
 
-.empty-state {
-  text-align: center;
-  padding: 36px 0;
-  color: var(--text-secondary);
-  font-size: 0.9rem;
+.orbis-event-risk {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 
-.error-banner {
-  background: rgba(239, 68, 68, 0.15);
-  border: 1px solid rgba(239, 68, 68, 0.3);
-  color: #f87171;
-  padding: 10px 14px;
-  border-radius: 6px;
-  font-size: 0.85rem;
+.risk-LOW    { color: var(--success); }
+.risk-MEDIUM { color: var(--warn); }
+.risk-HIGH   { color: var(--danger); }
+
+.orbis-event-msg {
+  color: var(--text-muted);
+  line-height: 1.4;
 }
