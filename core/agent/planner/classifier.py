@@ -26,6 +26,7 @@ class CapabilityClass(str, Enum):
     DOCUMENT_GENERATION = "DOCUMENT_GENERATION"
     TERMINAL_COMMANDS = "TERMINAL_COMMANDS"
     DESKTOP_INSPECTION = "DESKTOP_INSPECTION"
+    SYSTEM_CONTROL = "SYSTEM_CONTROL"
     WORKSPACE_CONTINUITY = "WORKSPACE_CONTINUITY"
     INTENT_CONTINUITY = "INTENT_CONTINUITY"
     WORKSPACE_RESTORATION = "WORKSPACE_RESTORATION"
@@ -99,6 +100,18 @@ def is_ambiguous_or_malformed(prompt: str) -> Tuple[bool, Optional[str]]:
     if has_question_starter and trailing_dangling:
         return True, "Your query appears incomplete. Could you please specify the full topic or question?"
 
+    # 3. Malformed office targets with musical/adjective terms (e.g., "chief minister of the melodic")
+    office_adjective_pattern = re.search(
+        r"\b(?:chief\s+minister|prime\s+minister|president|governor|mayor)\s+of\s+(?:the\s+)?(melodic|rhythmic|harmonic|musical|lyrical|symphonic|loud|quiet|tasty|fragrant|blue|green|yellow)\b",
+        lower,
+    )
+    if office_adjective_pattern:
+        return True, "I could not identify the state, region, or organization in your question. Could you please clarify who you are asking about?"
+
+    # 4. Bare tautological queries e.g. "who is who", "what is what"
+    if re.search(r"^(?:who\s+is\s+who|what\s+is\s+what)\s*[.?!]?$", lower):
+        return True, "Could you please specify the exact person or topic you would like to know about?"
+
     return False, None
 
 
@@ -158,6 +171,54 @@ def extract_project_assistance_metadata(prompt: str) -> Tuple[str, str]:
         return action, subj
 
     return "assist", raw
+
+
+def extract_system_control_metadata(prompt: str) -> Tuple[Optional[str], Optional[int], Optional[str]]:
+    """
+    Extracts (action, level, clarification_message) from a system control prompt.
+    Actions: 'set_volume', 'get_volume', 'mute', 'unmute'.
+    Level: integer in [0, 100], or None.
+    Clarification: message to ask user if incomplete/ambiguous/invalid, or None.
+    """
+    if not prompt:
+        return None, None, "Could you please specify what system control action you would like to perform?"
+
+    norm = prompt.strip().lower()
+
+    # 1. Mute / Unmute
+    if re.search(r"\bun-?mute\b", norm) or "turn sound back on" in norm or "turn on sound" in norm:
+        return "unmute", None, None
+    if re.search(r"\b(?:mute|silence)\b", norm) or "turn off sound" in norm:
+        return "mute", None, None
+
+    # 2. Get volume queries
+    if (
+        re.search(r"\b(?:what\s+is|what's|get|check|tell\s+me|show)\s+(?:the\s+)?(?:current\s+)?(?:master\s+)?(?:volume|sound|audio)\b", norm)
+        or re.search(r"\b(?:current\s+)?(?:volume|audio)\s+level\b", norm)
+        or re.search(r"\bhow\s+loud\s+is\s+it\b", norm)
+        or norm in ("volume", "volume?", "check volume", "get volume", "current volume")
+    ):
+        return "get_volume", None, None
+
+    # 3. Check for explicit numbers (e.g., "to 90%", "at 50%", "to 20", "volume 80", "-10%", "150%")
+    all_nums = re.findall(r"(?:^|\s)(-?\d+)(?:%|percent|\b)", norm)
+    if all_nums:
+        val = int(all_nums[-1])
+        if val < 0 or val > 100:
+            return "set_volume", None, "Volume level must be between 0 and 100 percent."
+        return "set_volume", val, None
+
+    # 4. Relative adjustments without explicit level:
+    if re.search(r"\b(?:increase|turn\s+up|raise|higher|make\s+it\s+louder|louder)\b", norm):
+        return "set_volume", None, "What volume level would you like me to set (0-100%)?"
+    if re.search(r"\b(?:decrease|turn\s+down|lower|reduce|make\s+it\s+quieter|quieter)\b", norm):
+        return "set_volume", None, "What volume level would you like me to set (0-100%)?"
+
+    # 5. Generic "set volume" / "change volume" without level
+    if re.search(r"\b(?:set|change|adjust)\s+(?:the\s+)?(?:master\s+)?volume\b", norm):
+        return "set_volume", None, "What volume level would you like me to set (0-100%)?"
+
+    return "get_volume", None, None
 
 
 def classify_capability(prompt: str) -> CapabilityClass:
@@ -248,7 +309,7 @@ def classify_capability(prompt: str) -> CapabilityClass:
     )
     has_research_signals = any(
         r in norm
-        for r in ("search", "research", "find online", "lookup online", "lookup", "explore", "investigate")
+        for r in ("search", "research", "find online", "lookup online", "lookup", "explore", "investigate", "find")
     )
 
     if has_creation_verb and has_doc_target:
@@ -293,13 +354,38 @@ def classify_capability(prompt: str) -> CapabilityClass:
             "active window", "what application am i using", "what app am i using",
             "what am i using", "what window is open", "what window is active",
             "desktop inspection", "list processes", "running processes", "active app",
-            "on my screen", "on the screen"
+            "on my screen", "on the screen", "desktop window", "desktop windows"
         )
-    ) or bool(re.search(r"\bwhat\s+(?:window|application|app|is\s+currently\s+on\s+my\s+screen)\b", norm)) or bool(re.search(r"\bwhat\s+(?:window|application|app)\s+is\s+(?:currently\s+)?(?:open|active|running|focused)\b", norm))
+    ) or ("desktop" in norm and any(w in norm for w in ("window", "windows", "apps", "applications"))) or bool(re.search(r"\bwhat\s+(?:window|application|app|is\s+currently\s+on\s+my\s+screen)\b", norm)) or bool(re.search(r"\bwhat\s+(?:window|application|app)\s+is\s+(?:currently\s+)?(?:open|active|running|focused)\b", norm))
     if is_desktop_query:
         return CapabilityClass.DESKTOP_INSPECTION
 
-    # 12. Fresh Information & Explicit Web Search
+    # Geometric / math volume query exclusion:
+    # "volume of a sphere", "calculate volume of cylinder", "volume formula for cone"
+    is_geometric_volume = bool(
+        re.search(
+            r"\bvolume\s+of\s+(?:a\s+|an\s+|the\s+)?(?:sphere|cylinder|cone|cube|box|prism|pyramid|hemisphere|shape|container|tank|room|gas|liquid)\b",
+            norm,
+        )
+        or re.search(r"\b(?:calculate|formula\s+for|find\s+the)\s+volume\b", norm)
+    )
+
+    # 12. System Control (Audio Volume & Mute)
+    if not is_geometric_volume:
+        is_system_control = (
+            bool(re.search(r"\b(?:un-?mute)\b", norm))
+            or bool(re.search(r"\b(?:mute|silence)\s*(?:the\s+)?(?:computer|pc|system|audio|sound|speakers?)?\b", norm))
+            or (re.search(r"\b(?:mute|silence)\b", norm) and not re.search(r"\bmute\s+(?:point|button|switch)\b", norm))
+            or bool(re.search(r"\b(?:get|check|what\s+is|what's|show)\s+(?:the\s+)?(?:current\s+)?(?:master\s+)?(?:volume|sound|audio\s+level)\b", norm))
+            or bool(re.search(r"\b(?:current\s+)?(?:volume|audio)\s+level\b", norm))
+            or bool(re.search(r"\b(?:set|increase|decrease|raise|lower|change|adjust|turn\s+(?:up|down)|put|make)\s+(?:the\s+)?(?:master\s+)?(?:volume|sound|audio)\b", norm))
+            or bool(re.search(r"\bvolume\s+(?:to\s+)?\d+\s*(?:%|percent)?\b", norm))
+            or bool(re.search(r"\b(?:make\s+it|turn\s+it)\s+(?:louder|quieter)\b", norm))
+        )
+        if is_system_control:
+            return CapabilityClass.SYSTEM_CONTROL
+
+    # 13. Fresh Information & Explicit Web Search
     # Explicit web search verbs
     has_explicit_web_search = any(
         w in norm
@@ -315,14 +401,29 @@ def classify_capability(prompt: str) -> CapabilityClass:
     # Temporal / fresh information signals (e.g. latest version, latest release, recent news)
     has_freshness_signal = bool(
         re.search(
-            r"\b(?:latest\s+news|recent\s+news|today'?s\s+news|latest\s+version|current\s+version|"
-            r"latest\s+release|current\s+release|recently\s+released|latest\s+update|"
-            r"recent\s+(?:articles?|news|updates?|developments?|papers?|breakthroughs?))\b",
+            r"\b(?:latest\s+news|recent\s+news|today'?s\s+news|news\s+today|"
+            r"(?:latest|current)\s+(?:[a-zA-Z0-9_\-]+\s+)?(?:version|release|update)|"
+            r"recently\s+released|"
+            r"recent\s+(?:articles?|news|updates?|developments?|papers?|breakthroughs?)|"
+            r"happened\s+recently|recently\s+in\b)\b",
+            norm,
+        )
+        or re.search(
+            r"\b(?:current\s+(?:price|stock\s+price|market\s+cap|score|rate|exchange\s+rate|weather)|"
+            r"live\s+(?:score|updates?|match|stream))\b",
+            norm,
+        )
+        or re.search(
+            r"\b(?:who\s+(?:won|is\s+winning)|winner\s+of|champions?\s+of|results?\s+of)\b.+\b202[4-9]\b",
             norm,
         )
         or re.search(
             r"\bwho\s+is\s+(?:the\s+)?(?:current\s+)?(?:chief\s+minister|prime\s+minister|president|ceo|cto|cfo|governor|mayor)\b",
             norm,
+        )
+        or (
+            bool(re.search(r"\b(?:today|this\s+week|this\s+month)\b", norm))
+            and any(w in norm for w in ("news", "events", "happened", "headline", "headlines", "weather", "updates"))
         )
     )
     if has_explicit_web_search or has_freshness_signal:
@@ -360,7 +461,8 @@ def classify_capability(prompt: str) -> CapabilityClass:
 
     # 16. Informational queries with question signals or query markers
     has_info_signal = bool(
-        re.search(r"\b(?:what|who|where|when|why|how|tell|about|info|information|history|define|meaning)\b", norm)
+        re.search(r"\b(?:what|who|where|when|why|how|tell|about|info|information|history|define|meaning|calculate|compute|formula)\b", norm)
+        or is_geometric_volume
         or norm.endswith("?")
     )
     if has_info_signal:

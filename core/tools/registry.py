@@ -97,6 +97,7 @@ def create_default_tool_registry(
     from core.tools.restoration_tool import RestorationTool
     from core.tools.system_tool import SystemUtilityTool
     from core.tools.knowledge_tool import KnowledgeTool
+    from core.tools.system_control_tool import SystemControlTool
 
     if llm_provider is None:
         try:
@@ -110,6 +111,7 @@ def create_default_tool_registry(
     registry.register(FileTool())
     registry.register(DesktopTool())
     registry.register(SystemUtilityTool())
+    registry.register(SystemControlTool())
     registry.register(KnowledgeTool(llm_provider=llm_provider))
 
     if db is not None:

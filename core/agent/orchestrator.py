@@ -117,6 +117,24 @@ def format_useful_tool_output(tool_name: str, output: Any, step_params: Optional
         if answer:
             return str(answer)
 
+    # 8. System Control tool (volume, mute)
+    if tool_name in ("system_control", "system_control_tool") and isinstance(output, dict):
+        msg = output.get("message")
+        if msg:
+            return str(msg)
+        action = output.get("action")
+        vol = output.get("level") if output.get("level") is not None else output.get("volume_percent")
+        muted = output.get("muted")
+        if action == "set_volume":
+            return f"Master volume set to {vol}%."
+        elif action == "get_volume":
+            mute_str = " (muted)" if muted else ""
+            return f"Current master volume is {vol}%{mute_str}."
+        elif action == "mute":
+            return "Master volume is now muted."
+        elif action == "unmute":
+            return f"Master volume unmuted (current volume: {vol}%)." if vol is not None else "Master volume unmuted."
+
     return None
 
 
@@ -1041,7 +1059,8 @@ class AgentOrchestrator:
                 user_facing_answer = exec_res.summary
 
             clean_answer = EventSanitizer.clean_message(user_facing_answer)
-            exec_res.summary = clean_answer
+            if not exec_res.plan or len(exec_res.plan.steps) <= 1:
+                exec_res.summary = clean_answer
 
             artifact_info = None
             if isinstance(exec_res.final_output, dict) and "file_name" in exec_res.final_output:

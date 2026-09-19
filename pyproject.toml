@@ -20,6 +20,8 @@ dependencies = [
     "fastapi>=0.110.0",
     "uvicorn>=0.28.0",
     "websockets>=12.0",
+    "pycaw>=20240000; sys_platform == 'win32'",
+    "comtypes>=1.4.0; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

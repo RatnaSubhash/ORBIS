@@ -23,6 +23,7 @@ from core.agent.planner.classifier import (
     CapabilityClass,
     classify_capability,
     extract_project_assistance_metadata,
+    extract_system_control_metadata,
     is_ambiguous_or_malformed,
 )
 from core.agent.planner.validator import PlanValidator
@@ -278,6 +279,13 @@ class HierarchicalPlanner(BasePlanner):
                 return self._plan_clarification_task(
                     request, tool_registry, clarification_msg or "Could you please clarify what you would like to know?"
                 )
+            if self.llm_provider is not None:
+                try:
+                    llm_plan = await self._plan_with_llm(request, tool_registry)
+                    if llm_plan is not None:
+                        return llm_plan
+                except Exception as e:
+                    logger.warning("LLM planning failed or was rejected: %s", e)
             return self._plan_default_fallback(request, tool_registry)
 
         # 2. Capabilities overview (ABOUT_ORBIS_CAPABILITIES)
@@ -337,19 +345,27 @@ class HierarchicalPlanner(BasePlanner):
         ):
             return self._plan_desktop_inspection(request, tool_registry)
 
-        # 12. Fresh Information / Web Research
+        # 12. System Control (Audio Volume & Mute)
+        if cap == CapabilityClass.SYSTEM_CONTROL:
+            return self._plan_system_control_task(request, tool_registry)
+
+        # 13. Fresh Information / Web Research
         if cap == CapabilityClass.FRESH_INFORMATION and tool_registry.get("web_research") is not None:
             return self._plan_web_research_task(request, tool_registry)
 
-        # 13. Technical Explanations & Comparisons
+        # 14. Technical Explanations & Comparisons
         if cap == CapabilityClass.TECHNICAL_EXPLANATION:
             is_comp = any(w in lower_prompt for w in ("compare", "versus", "vs", "difference", "differ"))
             mode = "comparison" if is_comp else "explanation"
             return self._plan_knowledge_task(request, tool_registry, mode=mode)
 
-        # 14. General Information & Factual Questions
+        # 15. General Information & Factual Questions
         if cap == CapabilityClass.GENERAL_INFORMATION:
-            return self._plan_knowledge_task(request, tool_registry, mode="factual")
+            if (
+                tool_registry.get("knowledge") is not None
+                or tool_registry.get("knowledge_tool") is not None
+            ):
+                return self._plan_knowledge_task(request, tool_registry, mode="factual")
 
         # 15. Echo / Message Pattern
         if lower_prompt.startswith("echo ") or lower_prompt.startswith("say "):
@@ -731,6 +747,86 @@ class HierarchicalPlanner(BasePlanner):
             dependencies=[],
             state=TaskState.READY,
             risk_level=echo_tool.risk_level,
+        )
+
+        plan = TaskPlan(
+            request_id=request.request_id,
+            user_prompt=request.user_prompt,
+            task_type=TaskType.SINGLE_STEP,
+            root_step_ids=[step_id],
+            steps={step_id: step},
+        )
+        PlanValidator.validate_plan_or_raise(plan, tool_registry=tool_registry)
+        return plan
+
+    def _plan_system_control_task(
+        self, request: AgentRequest, tool_registry: ToolRegistry
+    ) -> TaskPlan:
+        """Constructs a deterministic plan for system control (volume and mute)."""
+        prompt = request.user_prompt.strip()
+        action, level, clarification = extract_system_control_metadata(prompt)
+
+        # Incomplete, ambiguous, or invalid volume levels require immediate conversational clarification
+        if clarification:
+            return self._plan_clarification_task(request, tool_registry, clarification)
+
+        ctrl_tool = tool_registry.get("system_control") or tool_registry.get("system_control_tool")
+        if ctrl_tool is None:
+            # Safe guidance fallback if tool is not registered in this environment
+            echo_tool = tool_registry.get("echo") or tool_registry.get("echo_tool")
+            if echo_tool:
+                step_id = "step_system_control_unavailable"
+                step = TaskStep(
+                    step_id=step_id,
+                    title="System Control Unavailable",
+                    description="System control tool is not registered in current environment.",
+                    tool_name=echo_tool.name,
+                    parameters={"message": "System control capabilities are not available in this environment."},
+                    dependencies=[],
+                    state=TaskState.READY,
+                    risk_level=echo_tool.risk_level,
+                )
+                plan = TaskPlan(
+                    request_id=request.request_id,
+                    user_prompt=request.user_prompt,
+                    task_type=TaskType.SINGLE_STEP,
+                    root_step_ids=[step_id],
+                    steps={step_id: step},
+                )
+                PlanValidator.validate_plan_or_raise(plan, tool_registry=tool_registry)
+                return plan
+            raise ValueError("SystemControlTool is required for system control tasks, but is not registered.")
+
+        # Build parameters
+        parameters: Dict[str, Any] = {"action": action}
+        if action == "set_volume":
+            parameters["level"] = level
+            step_title = f"Set System Volume to {level}%"
+            step_desc = f"Sets master audio endpoint volume to {level}% with post-mutation verification."
+        elif action == "get_volume":
+            step_title = "Get System Volume"
+            step_desc = "Retrieves master audio endpoint volume and mute status."
+        elif action == "mute":
+            step_title = "Mute System Audio"
+            step_desc = "Mutes master audio endpoint with post-mutation verification."
+        elif action == "unmute":
+            step_title = "Unmute System Audio"
+            step_desc = "Unmutes master audio endpoint with post-mutation verification."
+        else:
+            step_title = f"System Control ({action})"
+            step_desc = f"Executes system control action '{action}'."
+
+        step_id = "step_system_control"
+        step = TaskStep(
+            step_id=step_id,
+            title=step_title,
+            description=step_desc,
+            tool_name=ctrl_tool.name,
+            parameters=parameters,
+            dependencies=[],
+            state=TaskState.READY,
+            risk_level=ctrl_tool.risk_level,
+            requires_approval=False,
         )
 
         plan = TaskPlan(

@@ -27,6 +27,12 @@ from core.tools.terminal_tool import CommandPolicy, TerminalActionParameters, Te
 from core.tools.voice_tool import VoiceTool, VoiceToolParameters
 from core.tools.system_tool import SystemUtilityParameters, SystemUtilityTool
 from core.tools.knowledge_tool import KnowledgeParameters, KnowledgeTool
+from core.tools.system_control_tool import (
+    MockAudioEndpoint,
+    SystemControlParameters,
+    SystemControlTool,
+    WindowsAudioEndpoint,
+)
 from core.tools.web_research_tool import (
     SafeHTMLTextExtractor,
     WebResearchParameters,
@@ -69,6 +75,10 @@ __all__ = [
     "VoiceToolParameters",
     "SystemUtilityTool",
     "SystemUtilityParameters",
+    "SystemControlTool",
+    "SystemControlParameters",
+    "WindowsAudioEndpoint",
+    "MockAudioEndpoint",
     "KnowledgeTool",
     "KnowledgeParameters",
 ]
