@@ -20,7 +20,6 @@ from core.restoration.models import (
     WindowBounds,
 )
 from core.restoration.registry import ApplicationRegistry
-from core.tools.web_research_tool import validate_and_sanitize_url
 from core.types import RiskLevel
 
 
@@ -124,7 +123,7 @@ class PreflightValidator:
         # Multi-app restoration requires user approval by policy, independent of intrinsic risk
         valid_steps_count = sum(1 for s in plan.steps if s.status == RestorationStepStatus.PENDING)
         plan.requires_user_approval = (
-            valid_steps_count > 1 or self.settings.restoration_require_approval
+            valid_steps_count > 1 and self.settings.restoration_require_approval
         )
 
         plan.is_preflight_valid = has_executable_steps
@@ -168,6 +167,7 @@ class PreflightValidator:
             return False, None, f"Only 'http' and 'https' schemes are permitted (got '{scheme}:')."
 
         try:
+            from core.tools.web_research_tool import validate_and_sanitize_url
             sanitized = validate_and_sanitize_url(raw_url)
             return True, sanitized, None
         except Exception as e:
@@ -193,7 +193,10 @@ class PreflightValidator:
 
         # 4. Canonical resolution against workspace root
         if not candidate.is_absolute():
-            resolved = (self.allowed_root / candidate).resolve()
+            if candidate.name.lower() == self.allowed_root.name.lower():
+                resolved = self.allowed_root
+            else:
+                resolved = (self.allowed_root / candidate).resolve()
         else:
             resolved = candidate.resolve()
 

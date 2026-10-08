@@ -112,12 +112,12 @@ export function AwakeningSequence({ children }) {
       setPhase('gliding');
     }, 2400);
 
-    // 4. Gliding -> Complete settled home position (~3850ms)
-    // Gliding duration = 1400ms (continuous GPU-accelerated motion) + 50ms buffer
+    // 4. Gliding -> Complete settled home position (~4000ms)
+    // Gliding duration = 1550ms (slow, continuous GPU-accelerated motion) + 50ms buffer
     schedule(() => {
       setPhase('complete');
       hasCompletedInitialAwakening = true;
-    }, 3850);
+    }, 4000);
 
     return () => {
       timersRef.current.forEach(clearTimeout);

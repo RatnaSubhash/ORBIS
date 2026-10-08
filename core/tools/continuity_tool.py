@@ -4,6 +4,7 @@ Exposes workspace continuity query capabilities via the BaseTool contract,
 enabling the Agent Orchestrator to answer "What was I working on?".
 """
 
+from datetime import datetime
 from typing import Optional
 from pydantic import BaseModel, Field
 
@@ -25,6 +26,10 @@ class ContinuityToolParameters(BaseModel):
     time_window_hours: Optional[float] = Field(
         default=None,
         description="Optional filter in hours to constrain continuity lookup.",
+    )
+    reference_time: Optional[datetime] = Field(
+        default=None,
+        description="Optional continuity cutoff timestamp to reconstruct pre-query workspace context.",
     )
 
 
@@ -68,7 +73,22 @@ class ContinuityTool(BaseTool):
             else ContinuityToolParameters.model_validate(params)
         )
 
-        response: ContinuityResponse = self.service.execute_query(typed_params.query)
+        ref_time = typed_params.reference_time
+        if ref_time is None and context and isinstance(context.metadata, dict):
+            raw_ref = context.metadata.get("request_timestamp")
+            if raw_ref:
+                try:
+                    ref_time = datetime.fromisoformat(raw_ref)
+                except Exception:
+                    pass
+
+        structured_q = self.service.classify_query(typed_params.query)
+        if ref_time is not None:
+            structured_q.cutoff_time = ref_time
+        if typed_params.time_window_hours is not None:
+            structured_q.time_window_hours = typed_params.time_window_hours
+
+        response: ContinuityResponse = self.service.execute_query(structured_q)
 
         return ToolResult(
             success=True,

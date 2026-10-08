@@ -7,6 +7,7 @@ grounded strictly in observed workspace evidence, preserving complete provenance
 from typing import List, Optional
 
 from core.continuity.models import (
+    ContinuityQueryType,
     ContinuityResponse,
     ProvenanceSource,
     RetrievedContextEvidence,
@@ -96,6 +97,7 @@ class GroundedResponseBuilder:
         self,
         query: str,
         evidence_list: List[RetrievedContextEvidence],
+        query_type: Optional[ContinuityQueryType] = None,
     ) -> ContinuityResponse:
         """
         Produces a grounded ContinuityResponse from retrieved evidence.
@@ -103,15 +105,26 @@ class GroundedResponseBuilder:
         """
         # Case 1: No evidence retrieved or empty list
         if not evidence_list:
+            q_lower = query.lower() if query else ""
+            if "yesterday" in q_lower:
+                from datetime import datetime, timedelta
+                yesterday_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+                msg = f"No recorded workspace activity or sessions were found for yesterday ({yesterday_str})."
+            elif "today" in q_lower:
+                msg = "No recorded workspace activity or sessions were found for today."
+            else:
+                msg = (
+                    "No recorded workspace activity or sessions found. "
+                    "Context is insufficient to determine what you were working on."
+                )
+
             return ContinuityResponse(
                 query=query,
                 has_sufficient_context=False,
-                grounded_summary=(
-                    "No recorded workspace activity or sessions found. "
-                    "Context is insufficient to determine what you were working on."
-                ),
+                grounded_summary=msg,
                 active_applications=[],
                 primary_resources=[],
+                projects=[],
                 last_activity_timestamp=None,
                 confidence_score=0.0,
                 evidence=[],
@@ -120,8 +133,14 @@ class GroundedResponseBuilder:
 
         primary = evidence_list[0]
 
+        from core.continuity.extractor import is_protected_resource
+
+        # Defense-in-depth: Re-filter all resources to guarantee no protected file leakage
+        safe_resources = [r for r in primary.resources if not is_protected_resource(r)]
+        projects = list(primary.projects)
+
         # Case 2: Session exists but has zero applications, resources, and events
-        if not primary.applications and not primary.resources and primary.event_count == 0:
+        if not primary.applications and not safe_resources and not projects and primary.event_count == 0:
             merged_prov = self._merge_provenance(evidence_list)
             return ContinuityResponse(
                 query=query,
@@ -132,6 +151,7 @@ class GroundedResponseBuilder:
                 ),
                 active_applications=[],
                 primary_resources=[],
+                projects=[],
                 last_activity_timestamp=primary.end_time,
                 confidence_score=0.1,
                 evidence=evidence_list,
@@ -146,19 +166,9 @@ class GroundedResponseBuilder:
 
         # Format application segment
         if other_apps:
-            apps_text = f"in {primary_app}, with related activity in {', '.join(other_apps)}"
+            apps_context_text = f"in {primary_app}, with related activity in {', '.join(other_apps)}"
         else:
-            apps_text = f"in {primary_app}"
-
-        # Format resource segment
-        if primary.resources:
-            sample_resources = primary.resources[:3]
-            res_str = ", ".join(sample_resources)
-            if len(primary.resources) > 3:
-                res_str += f" and {len(primary.resources) - 3} other resources"
-            res_text = f" Observed resources include: {res_str}."
-        else:
-            res_text = " No specific file or URL resources were captured."
+            apps_context_text = f"in {primary_app}"
 
         # Format temporal segment
         start_str = primary.start_time.strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -175,7 +185,84 @@ class GroundedResponseBuilder:
             f"({dur_text}, {primary.event_count} events)."
         )
 
-        grounded_summary = f"You were working {apps_text}.{res_text}{time_text}"
+        # Dimension-aware response construction
+        if query_type == ContinuityQueryType.WHAT_CHANGED_TODAY:
+            all_resources = []
+            for ev in evidence_list:
+                for r in ev.resources:
+                    if r not in all_resources and not is_protected_resource(r):
+                        all_resources.append(r)
+            res_clause = f" Files involved: {', '.join(all_resources[:5])}." if all_resources else ""
+            sess_count = len(evidence_list)
+            grounded_summary = (
+                f"Today you had {sess_count} recorded work session{'s' if sess_count != 1 else ''} primarily in {primary_app}.{res_clause}{time_text}"
+            )
+
+        elif query_type == ContinuityQueryType.APP_QUERY:
+            if other_apps:
+                grounded_summary = (
+                    f"You were using {primary_app}, with related activity in {', '.join(other_apps)}.{time_text}"
+                )
+            else:
+                grounded_summary = f"You were using {primary_app}.{time_text}"
+
+        elif query_type == ContinuityQueryType.PROJECT_QUERY:
+            if projects:
+                proj_str = ", ".join(projects)
+                grounded_summary = (
+                    f"You were working on the {proj_str} project ({apps_context_text}).{time_text}"
+                )
+            else:
+                grounded_summary = (
+                    f"No specific project name was captured in your recent workspace activity. "
+                    f"(Active applications were {apps_context_text}).{time_text}"
+                )
+
+        elif query_type == ContinuityQueryType.FILE_QUERY:
+            if safe_resources:
+                res_str = ", ".join(safe_resources)
+                proj_clause = f" on the {', '.join(projects)} project" if projects else ""
+                grounded_summary = (
+                    f"You were working with the following files{proj_clause}: {res_str}. "
+                    f"({apps_context_text}).{time_text}"
+                )
+            else:
+                grounded_summary = (
+                    f"No specific files were captured in your recent workspace activity. "
+                    f"(Active applications were {apps_context_text}).{time_text}"
+                )
+
+        else:
+            # General continuity / what was I working on
+            if projects and safe_resources:
+                proj_str = ", ".join(projects)
+                sample_resources = safe_resources[:3]
+                res_str = ", ".join(sample_resources)
+                if len(safe_resources) > 3:
+                    res_str += f" and {len(safe_resources) - 3} other resources"
+                grounded_summary = (
+                    f"You were working on the {proj_str} project {apps_context_text}, "
+                    f"focusing on {res_str}.{time_text}"
+                )
+            elif projects:
+                proj_str = ", ".join(projects)
+                grounded_summary = (
+                    f"You were working on the {proj_str} project {apps_context_text}. "
+                    f"No specific file or URL resources were captured.{time_text}"
+                )
+            elif safe_resources:
+                sample_resources = safe_resources[:3]
+                res_str = ", ".join(sample_resources)
+                if len(safe_resources) > 3:
+                    res_str += f" and {len(safe_resources) - 3} other resources"
+                grounded_summary = (
+                    f"You were working {apps_context_text}, focusing on {res_str}.{time_text}"
+                )
+            else:
+                grounded_summary = (
+                    f"You were working {apps_context_text}. "
+                    f"No specific file or URL resources were captured.{time_text}"
+                )
 
         merged_prov = self._merge_provenance(evidence_list)
         confidence = self._compute_confidence_heuristic(evidence_list)
@@ -185,7 +272,8 @@ class GroundedResponseBuilder:
             has_sufficient_context=True,
             grounded_summary=grounded_summary,
             active_applications=primary.applications,
-            primary_resources=primary.resources,
+            primary_resources=safe_resources,
+            projects=projects,
             last_activity_timestamp=primary.end_time,
             confidence_score=confidence,
             evidence=evidence_list,

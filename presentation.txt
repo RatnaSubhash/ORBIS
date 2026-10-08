@@ -1,0 +1,268 @@
+================================================================================
+                    ORBIS: CONTINUITY & RESTORATION INTELLIGENCE
+                       PROJECT PRESENTATION & CODEBASE WALKTHROUGH
+================================================================================
+
+Target Audience: Technical Reviewers, Architects, Evaluators
+Presentation Goal: Demonstrate the architecture, key technical innovations, 
+                   file organization, and live workflows of the ORBIS local-first
+                   desktop AI agent.
+
+--------------------------------------------------------------------------------
+TABLE OF CONTENTS
+--------------------------------------------------------------------------------
+1. Executive Pitch & High-Level Architecture (The 30-Second Summary)
+2. Core Architectural Pillars (Phases 1 - 10)
+3. File-by-File Walkthrough
+   A. Backend Gateway & Core Services (`core/gateway/`, `core/config.py`)
+   B. Passive Desktop Observation Engine (`core/observation/`)
+   C. Continuity Intelligence & Intent Synthesis (`core/continuity/`, `core/ice/`)
+   D. Authoritative SQLite Memory Architecture (`core/memory/`)
+   E. Workspace Restoration & Safety Execution Engine (`core/restoration/`)
+   F. Agent Tool Registry & Orchestrator (`core/agent/`, `core/tools/`)
+   G. Frontend Electron UI & Reactive State (`frontend/src/`)
+4. Step-by-Step Live Demo Script (What to show on screen)
+5. Technical Differentiators & Defense Points (For Q&A)
+
+================================================================================
+1. EXECUTIVE PITCH & HIGH-LEVEL ARCHITECTURE
+================================================================================
+ORBIS is an autonomous, local-first Desktop Continuity and Workspace Intelligence
+system. Unlike cloud-tethered assistants, ORBIS continuously observes desktop 
+activity locally with strict privacy sanitization, synthesizes contiguous workflows
+into explainable "Context DNA", and can declaratively restore applications, 
+documents, and exact multi-monitor window geometry across sessions.
+
+Key Architecture Highlights:
+- Privacy-First: All window titles and paths are sanitized before SQLite persistence.
+- Zero-Loss Observation: Real-time passive event loop logging application focus 
+  and window geometry without blocking user interaction.
+- Preflight Safety Isolation: Multi-stage validation ensuring that only verified,
+  canonical executables and approved safe paths/URLs are launched.
+- Deterministic Restoration: PID-bound window placement using native Win32 APIs
+  (EnumWindows, SetWindowPos, ShowWindow) with single-instance delegation fallbacks.
+
+================================================================================
+2. CORE ARCHITECTURAL PILLARS (PHASES 1 - 10)
+================================================================================
+Phase 1: Project Foundation & Strict Settings Management (Pydantic v2)
+Phase 2: Canonical Database Engine (SQLite WAL, vector search, topological graphs)
+Phase 3: Real-Time Event Bus & Async Telemetry
+Phase 4: Agent Orchestrator & Tool Invocation Sandbox
+Phase 5: Secure REST & WebSocket Gateway (FastAPI, uvicorn)
+Phase 6: Passive Windows Desktop Observation Service (Win32 event hook)
+Phase 7: Temporal Sessionizer & Context DNA Synthesis (Reconstructed Intents)
+Phase 8: Intent Continuity Engine (ICE) Evidence Retrieval
+Phase 9: Semantic Topology Knowledge Graph (Apps, Files, Sessions, Edges)
+Phase 10: Full-Fidelity Declarative Workspace Restoration Engine
+
+================================================================================
+3. FILE-BY-FILE CODEBASE WALKTHROUGH
+================================================================================
+
+--------------------------------------------------------------------------------
+A. Backend Gateway & Configuration
+--------------------------------------------------------------------------------
+- `core/config.py`:
+  * Centralized configuration using Pydantic Settings (`Settings`).
+  * Enforces typed paths, database URIs, observation polling intervals (3s heartbeat),
+    allowed workspace roots (containment), and LLM API keys.
+
+- `core/gateway/app.py`:
+  * FastAPI application factory (`create_app()`).
+  * Injects DatabaseManager, EventBus, WorkspaceObservationService, and Orchestrator.
+  * Manages the async lifespan: starts background continuous observation on boot
+    and flushes active sessions cleanly on shutdown.
+
+- `core/gateway/routes.py`:
+  * Exposes RESTful endpoints:
+    - `GET /api/health`: Liveness & dependency status.
+    - `GET /api/continuity/context`: Telemetry (observation status, total event count,
+      latest Context DNA, descending recent sessions, knowledge graph stats).
+    - `POST /api/restoration/preview`: Generates a preflight-validated restoration plan.
+    - `POST /api/restoration/execute`: Executes selected steps with policy approvals.
+    - `GET /api/tools`: Catalog of available tools with execution schemas.
+  * WebSocket `/ws/events`: Broadcasts live agent execution tokens and state changes.
+
+--------------------------------------------------------------------------------
+B. Passive Desktop Observation Engine (`core/observation/`)
+--------------------------------------------------------------------------------
+- `core/observation/windows.py`:
+  * `WindowsWorkspaceObserver`: Uses Win32 APIs (`GetForegroundWindow`,
+    `GetWindowThreadProcessId`, `GetWindowTextW`, `GetWindowRect`) to capture 
+    the active application, window title, and pixel coordinates.
+  * Native filtering of system noise (Task Switching, LockApp, SearchHost).
+
+- `core/observation/observer.py`:
+  * `WorkspaceObservationService`: Background asyncio worker running the 3-second
+    heartbeat loop.
+  * Sanitizes data via `EventSanitizer` before writing to SQLite and broadcasting
+    to listeners.
+
+- `core/observation/sanitizer.py`:
+  * Redacts API keys, credentials, personal identification, and internal OS tokens
+    from raw window titles and file paths.
+
+--------------------------------------------------------------------------------
+C. Continuity Intelligence & Intent Engine (`core/continuity/`, `core/ice/`)
+--------------------------------------------------------------------------------
+- `core/continuity/sessionizer.py`:
+  * `IncrementalSessionBuilder`: Segments raw window events into temporal sessions
+    based on idle gap thresholds. Computes duration, unique applications, and
+    touched project resources.
+
+- `core/continuity/dna.py`:
+  * `ContextDNASynthesizer`: Ingests finalized sessions and reconstructs the user's
+    underlying intent (e.g. "Active desktop development & research workflow"),
+    computing focus score, primary application, and persisted context metadata.
+
+- `core/ice/engine.py`:
+  * `IntentContinuityEngine` (ICE): Uses hybrid semantic retrieval and temporal
+    evidence clustering to determine what project or workspace context the user
+    was working on when they ask "Continue where I left off".
+
+--------------------------------------------------------------------------------
+D. Authoritative SQLite Memory Architecture (`core/memory/`)
+--------------------------------------------------------------------------------
+- `core/memory/db.py`:
+  * `DatabaseManager`: Authoritative persistence in SQLite (WAL mode).
+  * Manages tables: `workspace_events`, `sessions`, `context_dna`, `tasks`,
+    `knowledge_nodes`, `knowledge_edges`.
+  * `get_sessions(limit=10)`: Returns sessions sorted in descending chronological
+    order (`ORDER BY start_time DESC`) ensuring the latest work is always top.
+
+--------------------------------------------------------------------------------
+E. Declarative Workspace Restoration Engine (`core/restoration/`)
+--------------------------------------------------------------------------------
+- `core/restoration/registry.py`:
+  * `ApplicationRegistry`: Authoritative allowlist of approved desktop applications
+    (VS Code, Antigravity IDE, Google Chrome, Microsoft Edge, Windows Terminal,
+    File Explorer, Notepad, Spotify, Snipping Tool).
+  * Strict executable resolution: Resolves binaries exclusively from canonical
+    system paths and registry keys—never trusts arbitrary ambient PATH.
+  * `build_command_args()`: Formulates discrete argument lists (e.g., `--new-window`
+    for browsers, workspace root directory for Explorer/IDE) to guarantee visible windows.
+
+- `core/restoration/validator.py`:
+  * `PreflightValidator`: Analyzes every restoration step before launching.
+  * Verifies path traversal protection, workspace directory containment, URL SSRF
+    safety (`http`/`https` only), and multi-monitor window bounds sanity.
+
+- `core/restoration/window_manager.py`:
+  * `WindowsWindowManager`: Win32 ctypes interface.
+  * `find_windows_by_pid(pid)`: Finds the top-level HWND belonging strictly to
+    the spawned process.
+  * `set_window_bounds()` & `set_window_placement()`: Places and sizes windows
+    without stealing focus or altering z-order unexpectedly.
+
+- `core/restoration/engine.py`:
+  * `RestorationEngine`:
+    1. Creates preflight plans with deterministic step IDs (`rstep_{sess}_{idx}_{app}`).
+    2. Executes selected steps with failure isolation (one failing app does not
+       halt the restoration of remaining apps).
+    3. Runs independent verification: checks process liveness, window visibility,
+       and execution duration.
+
+--------------------------------------------------------------------------------
+F. Agent Orchestrator & Tool Registry (`core/agent/`, `core/tools/`)
+--------------------------------------------------------------------------------
+- `core/agent/orchestrator.py`:
+  * Coordinates multi-step reasoning, tool execution, and LLM responses.
+  * Emits streaming events over EventBus for UI feedback.
+
+- `core/tools/registry.py`:
+  * Declarative registry for system tools: file reading, shell execution, web search,
+    continuity inspection, and workspace restoration.
+
+--------------------------------------------------------------------------------
+G. Frontend Electron Application (`frontend/src/`)
+--------------------------------------------------------------------------------
+- `frontend/electron/main.cjs` & `preload.cjs`:
+  * Electron main process wrapper with context-isolated secure IPC bridge.
+
+- `frontend/src/state/AgentContext.jsx`:
+  * Global state management.
+  * Manages active views (WORKSPACE, COMMAND, LIVE_FLOW, TOOLS).
+  * Continuous 3-second heartbeat polling: keeps event counter and session list
+    updating live in real-time.
+
+- `frontend/src/components/views/WorkspaceView.jsx`:
+  * The Unified Workspace & Restoration dashboard.
+  * Left: Context DNA card, 4-stat Knowledge Graph topology grid, and Observed Resources folder.
+  * Right: Chronological Detected Workspace Sessions list with exact date and time
+    stamps (e.g., `Sep 24, 2026 • 11:37:19 PM – 11:44:11 PM`).
+  * Sub-panel: Preflight Restoration Plan with selectable checkboxes, executable
+    containment badges, and one-click restoration execution.
+  * Activity Log: Granular session event drawer with exact timestamp, process name,
+    and sanitized window title.
+
+- `frontend/src/components/views/LiveFlowView.jsx`:
+  * Interactive canvas showing real-time agent execution graph and tool flow.
+
+- `frontend/src/components/views/CommandView.jsx`:
+  * Conversational multi-modal command interface with streaming response bubbles.
+
+- `frontend/src/components/views/ToolsView.jsx`:
+  * High-density tool capability catalog with category filters and documentation.
+
+================================================================================
+4. STEP-BY-STEP LIVE DEMO SCRIPT
+================================================================================
+
+Step 1: Open ORBIS and Showcase the Awakening Sequence
+- Launch ORBIS via Electron (`npm run dev` or production build).
+- Point out the 3D globe visualization and smooth awakening into the main workspace.
+
+Step 2: Walk Through the Workspace Intelligence View
+- Navigate to the "Workspace" tab on the left OptionWheel dock.
+- Highlight the Header:
+  * "CONTINUITY INTELLIGENCE: Workspace Memory & Context Reconstruction"
+  * Point out the live `● OBSERVING (3s heartbeat)` indicator.
+  * Point out the live `Events: 768+` counter updating continuously.
+- Highlight the Left Column:
+  * Show Context DNA: Reconstructed intent, project name, active apps.
+  * Show Knowledge Graph stats: Nodes, Edges, Apps, Files.
+  * Click the "Observed Resources" folder to reveal tracked project files.
+
+Step 3: Demonstrate Continuous Session Tracking with Exact Dates & Times
+- Show the "Detected Workspace Sessions" column.
+- Note the clear timestamps:
+  * E.g., `Sep 24, 2026 • 11:37:19 PM – 11:44:11 PM (6m 53s)`
+- Switch between different sessions to demonstrate instantaneous plan preview
+  and audit event loading.
+- Switch to the "Session Events" tab to show the sanitized chronological event stream.
+
+Step 4: Execute Workspace Restoration
+- Select a session (e.g., containing Chrome, Explorer, or Antigravity).
+- Point out the Preflight Validated safety badges and LOW RISK calculation.
+- Select/unselect apps to demonstrate user policy control.
+- Click `Execute Workspace Restoration ({N} Apps)`.
+- Watch the selected applications launch and position their windows on screen!
+- Point out the Verification Summary card showing PID, window placement status,
+  and millisecond execution timing.
+
+================================================================================
+5. TECHNICAL DIFFERENTIATORS & DEFENSE POINTS (FOR Q&A)
+================================================================================
+Q: "Why not just use an ambient PATH lookup to launch apps?"
+A: Security risk. Ambient PATH can be hijacked by malicious local binaries or
+   DLL search-order hijacking. ORBIS resolves executables exclusively from verified,
+   canonical system directories and authoritative Windows Registry App Paths.
+
+Q: "What happens if one application fails to launch or crashes during restoration?"
+A: Failure Isolation. Each restoration step runs in an independent subprocess with
+   its own error boundary. A failure in one app does not abort or crash the remaining
+   applications in the plan.
+
+Q: "How does ORBIS prevent sensitive data leaks in window titles?"
+A: The `EventSanitizer` scrubs file paths, tokens, hashes, and authentication strings
+   before events ever touch the SQLite database or the UI.
+
+Q: "How does the app stay in sync with desktop changes?"
+A: The backend runs a passive 3-second heartbeat worker with native Win32 hooks.
+   The frontend automatically polls `/api/continuity/context` every 3 seconds to
+   increment live event counts and segment new sessions.
+
+================================================================================
+                            END OF PRESENTATION SCRIPT
+================================================================================

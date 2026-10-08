@@ -66,6 +66,7 @@ class TaskManager:
         prompt: str,
         orchestrator: AgentOrchestrator,
         correlation_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         sync: bool = False,
     ) -> ManagedTask:
@@ -92,9 +93,16 @@ class TaskManager:
         self._tasks[task_id] = managed_task
         self._task_order.append(task_id)
 
-        ctx_meta = {"correlation_id": resolved_corr_id}
+        ctx_meta = {
+            "correlation_id": resolved_corr_id,
+            "request_timestamp": managed_task.created_at.isoformat(),
+        }
+        if conversation_id:
+            ctx_meta["conversation_id"] = conversation_id
         if metadata:
             ctx_meta.update(metadata)
+            if not conversation_id and "conversation_id" in metadata:
+                ctx_meta["conversation_id"] = metadata["conversation_id"]
         exec_ctx = ExecutionContext(task_id=task_id, metadata=ctx_meta)
 
         if sync:

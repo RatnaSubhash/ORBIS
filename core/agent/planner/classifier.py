@@ -8,7 +8,7 @@ and transcription variations.
 
 from enum import Enum
 import re
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from core.continuity.service import ContinuityService
 
@@ -27,6 +27,10 @@ class CapabilityClass(str, Enum):
     TERMINAL_COMMANDS = "TERMINAL_COMMANDS"
     DESKTOP_INSPECTION = "DESKTOP_INSPECTION"
     SYSTEM_CONTROL = "SYSTEM_CONTROL"
+    APP_LAUNCHING = "APP_LAUNCHING"
+    NETWORK_CONTROL = "NETWORK_CONTROL"
+    HARDWARE_CONTROL = "HARDWARE_CONTROL"
+    MESSAGING = "MESSAGING"
     WORKSPACE_CONTINUITY = "WORKSPACE_CONTINUITY"
     INTENT_CONTINUITY = "INTENT_CONTINUITY"
     WORKSPACE_RESTORATION = "WORKSPACE_RESTORATION"
@@ -97,7 +101,10 @@ def is_ambiguous_or_malformed(prompt: str) -> Tuple[bool, Optional[str]]:
     has_question_starter = bool(
         re.search(r"^(who|what|where|when|which|how|tell\s+me|search|find|current|latest)\b", stripped_punct)
     )
-    if has_question_starter and trailing_dangling:
+    is_valid_inverted = bool(
+        re.search(r"\b(?:was|were|am|is|are|did|have)\s+(?:i|you|we|he|she|they)\s+[a-zA-Z\s]+?\s+(?:with|for|on|in|at|from|about)\s*$", stripped_punct)
+    )
+    if has_question_starter and trailing_dangling and not is_valid_inverted:
         return True, "Your query appears incomplete. Could you please specify the full topic or question?"
 
     # 3. Malformed office targets with musical/adjective terms (e.g., "chief minister of the melodic")
@@ -176,7 +183,8 @@ def extract_project_assistance_metadata(prompt: str) -> Tuple[str, str]:
 def extract_system_control_metadata(prompt: str) -> Tuple[Optional[str], Optional[int], Optional[str]]:
     """
     Extracts (action, level, clarification_message) from a system control prompt.
-    Actions: 'set_volume', 'get_volume', 'mute', 'unmute'.
+    Actions: 'set_volume', 'get_volume', 'mute', 'unmute',
+             'set_brightness', 'get_brightness', 'battery_saver', 'power_status', 'windows_settings'.
     Level: integer in [0, 100], or None.
     Clarification: message to ask user if incomplete/ambiguous/invalid, or None.
     """
@@ -185,13 +193,37 @@ def extract_system_control_metadata(prompt: str) -> Tuple[Optional[str], Optiona
 
     norm = prompt.strip().lower()
 
-    # 1. Mute / Unmute
+    # 1. Brightness
+    if "brightness" in norm or "dim" in norm or "brighten" in norm:
+        nums = re.findall(r"(?:^|\s)(-?\d+)(?:%|percent|\b)", norm)
+        if nums:
+            val = int(nums[-1])
+            if val < 0 or val > 100:
+                return "set_brightness", None, "Brightness level must be between 0 and 100 percent."
+            return "set_brightness", val, None
+        if any(w in norm for w in ("get", "check", "what is", "what's", "show", "current", "how bright")):
+            return "get_brightness", None, None
+        if any(w in norm for w in ("set", "change", "adjust", "dim", "brighten", "turn up", "turn down", "increase", "decrease")):
+            return "set_brightness", None, "What brightness level would you like me to set (0-100%)?"
+        return "get_brightness", None, None
+
+    # 2. Battery saver & Power status
+    if "battery saver" in norm or "power saver" in norm:
+        return "set_battery_saver", None, None
+    if "battery" in norm or "power" in norm:
+        return "get_power_status", None, None
+
+    # 3. Windows settings
+    if "setting" in norm or "dark mode" in norm:
+        return "get_windows_settings", None, None
+
+    # 4. Mute / Unmute
     if re.search(r"\bun-?mute\b", norm) or "turn sound back on" in norm or "turn on sound" in norm:
         return "unmute", None, None
     if re.search(r"\b(?:mute|silence)\b", norm) or "turn off sound" in norm:
         return "mute", None, None
 
-    # 2. Get volume queries
+    # 5. Get volume queries
     if (
         re.search(r"\b(?:what\s+is|what's|get|check|tell\s+me|show)\s+(?:the\s+)?(?:current\s+)?(?:master\s+)?(?:volume|sound|audio)\b", norm)
         or re.search(r"\b(?:current\s+)?(?:volume|audio)\s+level\b", norm)
@@ -200,7 +232,7 @@ def extract_system_control_metadata(prompt: str) -> Tuple[Optional[str], Optiona
     ):
         return "get_volume", None, None
 
-    # 3. Check for explicit numbers (e.g., "to 90%", "at 50%", "to 20", "volume 80", "-10%", "150%")
+    # 6. Check for explicit numbers
     all_nums = re.findall(r"(?:^|\s)(-?\d+)(?:%|percent|\b)", norm)
     if all_nums:
         val = int(all_nums[-1])
@@ -208,17 +240,120 @@ def extract_system_control_metadata(prompt: str) -> Tuple[Optional[str], Optiona
             return "set_volume", None, "Volume level must be between 0 and 100 percent."
         return "set_volume", val, None
 
-    # 4. Relative adjustments without explicit level:
+    # 7. Relative adjustments without explicit level:
     if re.search(r"\b(?:increase|turn\s+up|raise|higher|make\s+it\s+louder|louder)\b", norm):
         return "set_volume", None, "What volume level would you like me to set (0-100%)?"
     if re.search(r"\b(?:decrease|turn\s+down|lower|reduce|make\s+it\s+quieter|quieter)\b", norm):
         return "set_volume", None, "What volume level would you like me to set (0-100%)?"
 
-    # 5. Generic "set volume" / "change volume" without level
+    # 8. Generic "set volume" / "change volume" without level
     if re.search(r"\b(?:set|change|adjust)\s+(?:the\s+)?(?:master\s+)?volume\b", norm):
         return "set_volume", None, "What volume level would you like me to set (0-100%)?"
 
     return "get_volume", None, None
+
+
+def extract_app_launch_metadata(prompt: str) -> Dict[str, Any]:
+    """Extracts parameters for AppLaunchTool from a user prompt."""
+    norm = prompt.strip().lower()
+    pdf_match = re.search(r"\b(?:open|view)\s+(?:the\s+)?([a-zA-Z0-9_\-./\\]+\.pdf)\b", norm)
+    if pdf_match:
+        return {"action": "open_pdf", "target_path": pdf_match.group(1)}
+
+    yt_match = re.search(r"\b(?:play|search\s+for|search)\s+(.+?)\s+on\s+youtube\b", norm)
+    if yt_match:
+        return {"action": "youtube_search", "search_query": yt_match.group(1).strip()}
+    yt_match2 = re.search(r"\byoutube\s+(?:search\s+for|search|play)\s+(.+)\b", norm)
+    if yt_match2:
+        return {"action": "youtube_search", "search_query": yt_match2.group(1).strip()}
+
+    app_mapping = {
+        "notepad": "notepad",
+        "chrome": "chrome",
+        "google chrome": "chrome",
+        "vs code": "code",
+        "vscode": "code",
+        "visual studio code": "code",
+        "code": "code",
+        "spotify": "spotify",
+        "calculator": "calculator",
+        "calc": "calculator",
+        "terminal": "terminal",
+        "powershell": "terminal",
+        "cmd": "terminal",
+        "whatsapp": "whatsapp",
+        "edge": "edge",
+        "microsoft edge": "edge",
+        "msedge": "edge",
+        "opera": "opera",
+        "opera gx": "opera",
+        "steam": "steam",
+        "discord": "discord",
+        "explorer": "explorer",
+        "file explorer": "explorer",
+        "files": "explorer",
+        "settings": "settings",
+        "windows settings": "settings",
+        "word": "word",
+        "excel": "excel",
+        "powerpoint": "powerpoint",
+    }
+    for key, app in app_mapping.items():
+        if re.search(rf"\b(?:open|launch|start|run)\s+(?:the\s+)?{re.escape(key)}\b", norm):
+            return {"action": "launch_app", "app_name": app}
+
+    return {"action": "launch_app", "app_name": "notepad"}
+
+
+def extract_network_control_metadata(prompt: str) -> Dict[str, Any]:
+    """Extracts parameters for NetworkControlTool from a user prompt."""
+    norm = prompt.strip().lower()
+    if "bluetooth" in norm:
+        if "device" in norm or "paired" in norm:
+            return {"action": "list_bluetooth_devices"}
+        return {"action": "get_bluetooth_status"}
+    if "scan" in norm or "list" in norm or "available" in norm:
+        return {"action": "scan_wifi"}
+    if "disconnect" in norm or "turn off" in norm or "disable" in norm:
+        return {"action": "disconnect_wifi"}
+    return {"action": "get_wifi_status"}
+
+
+def extract_hardware_control_metadata(prompt: str) -> Dict[str, Any]:
+    """Extracts parameters for HardwareControlTool from a user prompt."""
+    norm = prompt.strip().lower()
+    if "game" in norm:
+        game_match = re.search(r"\b(?:launch|start|play)\s+(?:the\s+)?(?:game\s+)?([a-zA-Z0-9_\-]+)\b", norm)
+        game_name = game_match.group(1) if game_match else "cyberwar"
+        return {"action": "launch_game", "game_name": game_name}
+    color = "cyan"
+    for c in ("red", "green", "blue", "cyan", "magenta", "yellow", "white", "orange", "purple"):
+        if c in norm:
+            color = c
+            break
+    mode = "static"
+    for m in ("breathing", "wave", "reactive", "cycle"):
+        if m in norm:
+            mode = m
+            break
+    return {"action": "set_rgb_color", "color": color, "mode": mode, "brightness": 100}
+
+
+def extract_messaging_metadata(prompt: str) -> Dict[str, Any]:
+    """Extracts parameters for MessagingTool from a user prompt."""
+    norm = prompt.strip().lower()
+    platform = "whatsapp"
+    if "email" in norm:
+        platform = "email"
+    elif "sms" in norm or "text message" in norm:
+        platform = "sms"
+
+    to_match = re.search(r"\bto\s+([a-zA-Z0-9_@.\-]+)\b", prompt, flags=re.IGNORECASE)
+    recipient = to_match.group(1) if to_match else "contact"
+
+    msg_match = re.search(r"\b(?:saying|message|text)\s+['\"]?(.+?)['\"]?$", prompt, flags=re.IGNORECASE)
+    message = msg_match.group(1) if msg_match else "Hello from ORBIS"
+    return {"channel": platform, "recipient": recipient, "message": message}
 
 
 def classify_capability(prompt: str) -> CapabilityClass:
@@ -269,18 +404,51 @@ def classify_capability(prompt: str) -> CapabilityClass:
     if has_time_query or has_date_query or has_system_info:
         return CapabilityClass.REAL_TIME_UTILITY
 
-    # 4. Intent & Workspace Continuity
-    if ContinuityService.is_intent_query(prompt):
-        return CapabilityClass.INTENT_CONTINUITY
-    if ContinuityService.is_continuity_query(prompt):
-        return CapabilityClass.WORKSPACE_CONTINUITY
-
-    # 5. Workspace Restoration
-    if (
-        ("restore" in norm or "reopen" in norm)
-        and any(w in norm for w in ("workspace", "windows", "layout", "session", "apps"))
-    ):
+    # 4. Workspace Restoration
+    is_restoration = (
+        bool(re.search(r"\bcontinue\s+(?:from\s+)?where\s+(?:i|we)\s+left\s+off\b", norm))
+        or (
+            ("restore" in norm or "reopen" in norm or "resume" in norm)
+            and any(w in norm for w in ("workspace", "windows", "layout", "session", "apps", "project", "work"))
+        )
+        or (
+            "open" in norm
+            and any(
+                w in norm
+                for w in (
+                    "project i was working on",
+                    "project i was working on earlier",
+                    "what i was working on",
+                    "what i was doing",
+                    "workspace i was working on",
+                    "workspace from yesterday",
+                    "previous workspace",
+                    "previous project",
+                    "last project",
+                    "project from earlier",
+                    "where i left off",
+                )
+            )
+        )
+        or (
+            norm.startswith("open project ")
+            or norm.startswith("open the project ")
+            or (re.search(r"^open\s+(?:the\s+)?project\s+[a-zA-Z0-9_\-]+[?.!]?$", norm) is not None)
+        )
+        or (
+            ("preview" in norm or "dry run" in norm or "dry-run" in norm or "plan only" in norm)
+            and any(w in norm for w in ("restore", "restoration", "workspace"))
+        )
+        or ("preview what you would restore" in norm)
+    )
+    if is_restoration:
         return CapabilityClass.WORKSPACE_RESTORATION
+
+    # 5. Intent & Workspace Continuity
+    if ContinuityService.is_intent_query(prompt) or (norm and ContinuityService.is_intent_query(norm)):
+        return CapabilityClass.INTENT_CONTINUITY
+    if ContinuityService.is_continuity_query(prompt) or (norm and ContinuityService.is_continuity_query(norm)):
+        return CapabilityClass.WORKSPACE_CONTINUITY
 
     # 6. Project Assistance
     # Captures requests for technical project guidance, system architecture, or building software systems:
@@ -304,7 +472,9 @@ def classify_capability(prompt: str) -> CapabilityClass:
         t in norm
         for t in (
             "report", "document", "readme", "markdown", ".md", ".txt", "text file",
-            "file", "study notes", "notes", "recommendations"
+            "file", "study notes", "notes", "recommendations",
+            "excel", "spreadsheet", "sheet", ".xlsx", "presentation", "slides", "deck", ".pptx",
+            "word", ".docx", "pdf", ".pdf", "table", "csv"
         )
     )
     has_research_signals = any(
@@ -370,7 +540,41 @@ def classify_capability(prompt: str) -> CapabilityClass:
         or re.search(r"\b(?:calculate|formula\s+for|find\s+the)\s+volume\b", norm)
     )
 
-    # 12. System Control (Audio Volume & Mute)
+    # 12. Messaging (WhatsApp, Email, SMS)
+    is_messaging = bool(
+        re.search(r"\b(?:send|compose)\s+(?:a\s+)?(?:whatsapp|email|sms|text\s+message)\b", norm)
+        or re.search(r"\b(?:send\s+message|send\s+email|send\s+sms|send\s+whatsapp)\b", norm)
+    )
+    if is_messaging:
+        return CapabilityClass.MESSAGING
+
+    # 13. Network Control (Wi-Fi, Bluetooth)
+    is_network_control = bool(
+        re.search(r"\b(?:wi-?fi|wifi|wlan|bluetooth)\b", norm)
+        and any(w in norm for w in ("turn on", "turn off", "connect", "disconnect", "status", "scan", "list", "check", "devices", "networks", "paired", "toggle", "enable", "disable"))
+    )
+    if is_network_control:
+        return CapabilityClass.NETWORK_CONTROL
+
+    # 14. Hardware Control (RGB Keyboard, Game Launcher)
+    is_hardware_control = bool(
+        re.search(r"\b(?:rgb|backlight|keyboard\s+lighting|keyboard\s+color|keyboard\s+lights?)\b", norm)
+        or re.search(r"\b(?:launch|start|play)\s+(?:the\s+)?game\b", norm)
+    )
+    if is_hardware_control:
+        return CapabilityClass.HARDWARE_CONTROL
+
+    # 15. Application Launching (Allowlisted apps, PDFs, YouTube)
+    is_app_launch = bool(
+        re.search(r"\b(?:open|launch|start|run)\s+(?:app|application|program\s+)?(?:notepad|chrome|google\s+chrome|vs\s*code|visual\s+studio\s+code|code|spotify|calculator|calc|whatsapp|terminal|powershell|cmd|edge|msedge|opera|opera\s+gx|steam|discord|explorer|file\s+explorer|files|settings|windows\s+settings|word|excel|powerpoint)\b", norm)
+        or re.search(r"\b(?:open|view)\s+[a-zA-Z0-9_\-./\\]+\.pdf\b", norm)
+        or re.search(r"\b(?:play|search)\s+(?:on\s+)?youtube\b", norm)
+        or re.search(r"\byoutube\s+(?:search|play)\b", norm)
+    ) and not any(w in norm for w in ("workspace i was working on", "project i was working on", "where i left off", "previous project", "last project"))
+    if is_app_launch:
+        return CapabilityClass.APP_LAUNCHING
+
+    # 16. System Control (Audio Volume, Mute, Brightness, Power/Battery, Windows Settings)
     if not is_geometric_volume:
         is_system_control = (
             bool(re.search(r"\b(?:un-?mute)\b", norm))
@@ -381,6 +585,10 @@ def classify_capability(prompt: str) -> CapabilityClass:
             or bool(re.search(r"\b(?:set|increase|decrease|raise|lower|change|adjust|turn\s+(?:up|down)|put|make)\s+(?:the\s+)?(?:master\s+)?(?:volume|sound|audio)\b", norm))
             or bool(re.search(r"\bvolume\s+(?:to\s+)?\d+\s*(?:%|percent)?\b", norm))
             or bool(re.search(r"\b(?:make\s+it|turn\s+it)\s+(?:louder|quieter)\b", norm))
+            or bool(re.search(r"\b(?:brightness|screen\s+brightness|display\s+brightness)\b", norm))
+            or bool(re.search(r"\b(?:dim|brighten)\s+(?:the\s+)?(?:screen|display)\b", norm))
+            or bool(re.search(r"\b(?:battery\s+saver|power\s+saver|power\s+status|battery\s+status)\b", norm))
+            or bool(re.search(r"\b(?:windows\s+settings|system\s+settings|dark\s+mode\s+setting)\b", norm))
         )
         if is_system_control:
             return CapabilityClass.SYSTEM_CONTROL
@@ -436,12 +644,18 @@ def classify_capability(prompt: str) -> CapabilityClass:
 
     is_comparison = bool(
         re.search(r"\b(?:compare|versus|vs\.?|difference\s+between|differences\s+between)\b", norm)
-        or re.search(r"\bhow\s+does\s+.+\s+differ\s+from\b", norm)
+        or re.search(r"\bhow\s+(?:does|do)\s+.+\s+differ\s+(?:from|with)\b", norm)
+        or re.search(r"\bhow\s+are\s+.+\s+different\b", norm)
+        or re.search(r"\bside\s+by\s+side\b", norm)
+        or re.search(r"\bwhich\s+(?:one\s+)?(?:is|are)\s+(?:faster|better|easier|more|less|preferred|recommended)\b", norm)
+        or re.search(r"\bbetween\s+.+\s+and\s+.+\b", norm)
     )
     is_explanation = bool(
         re.search(r"\bexplain\b", norm)
         or re.search(r"\bhow\s+(?:does|do|works?|is)\b", norm)
         or re.search(r"\bwhy\s+(?:does|do|is|are|did)\b", norm)
+        or re.search(r"\b(?:give|show)\s+(?:me\s+)?(?:a\s+)?(?:simple\s+)?(?:real-?world\s+)?example\b", norm)
+        or re.search(r"\bexample\s+of\b", norm)
     )
     if is_comparison or is_explanation:
         return CapabilityClass.TECHNICAL_EXPLANATION

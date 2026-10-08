@@ -6,9 +6,10 @@ and explainable intent synthesis into a coherent ICEResult.
 
 from datetime import datetime, timezone
 import logging
-from typing import List, Optional, Union
+from typing import TYPE_CHECKING, Any, List, Optional, Union
 
-from core.agent.llm.base import BaseLLMProvider
+if TYPE_CHECKING:
+    from core.agent.llm.base import BaseLLMProvider
 from core.continuity.retriever import ContinuityRetriever
 from core.ice.classifier import TaskStateClassifier
 from core.ice.extractor import IntentEvidenceExtractor
@@ -40,7 +41,7 @@ class IntentContinuityEngine:
         retriever: Optional[ContinuityRetriever] = None,
         graph: Optional[KnowledgeGraph] = None,
         vector_memory: Optional[SemanticMemory] = None,
-        llm_provider: Optional[BaseLLMProvider] = None,
+        llm_provider: Optional["BaseLLMProvider"] = None,
         scorer: Optional[ContinuityScorer] = None,
         classifier: Optional[TaskStateClassifier] = None,
         synthesizer: Optional[IntentSynthesizer] = None,

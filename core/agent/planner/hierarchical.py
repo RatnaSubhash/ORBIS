@@ -7,6 +7,7 @@ structured planning, DAG dependency management, and safe controlled replanning.
 import json
 import logging
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
@@ -22,6 +23,10 @@ from core.agent.planner.base import BasePlanner
 from core.agent.planner.classifier import (
     CapabilityClass,
     classify_capability,
+    extract_app_launch_metadata,
+    extract_hardware_control_metadata,
+    extract_messaging_metadata,
+    extract_network_control_metadata,
     extract_project_assistance_metadata,
     extract_system_control_metadata,
     is_ambiguous_or_malformed,
@@ -345,9 +350,25 @@ class HierarchicalPlanner(BasePlanner):
         ):
             return self._plan_desktop_inspection(request, tool_registry)
 
-        # 12. System Control (Audio Volume & Mute)
+        # 12. System Control (Audio Volume & Mute, Brightness, Battery, Settings)
         if cap == CapabilityClass.SYSTEM_CONTROL:
             return self._plan_system_control_task(request, tool_registry)
+
+        # 12.1. Application Launching (Allowlisted apps, PDFs, YouTube)
+        if cap == CapabilityClass.APP_LAUNCHING and tool_registry.get("app_launch") is not None:
+            return self._plan_app_launch_task(request, tool_registry)
+
+        # 12.2. Network Control (Wi-Fi, Bluetooth)
+        if cap == CapabilityClass.NETWORK_CONTROL and tool_registry.get("network_control") is not None:
+            return self._plan_network_control_task(request, tool_registry)
+
+        # 12.3. Hardware Control (RGB Keyboard, Game Launcher)
+        if cap == CapabilityClass.HARDWARE_CONTROL and tool_registry.get("hardware_control") is not None:
+            return self._plan_hardware_control_task(request, tool_registry)
+
+        # 12.4. Messaging (WhatsApp, Email, SMS)
+        if cap == CapabilityClass.MESSAGING and tool_registry.get("messaging") is not None:
+            return self._plan_messaging_task(request, tool_registry)
 
         # 13. Fresh Information / Web Research
         if cap == CapabilityClass.FRESH_INFORMATION and tool_registry.get("web_research") is not None:
@@ -355,7 +376,7 @@ class HierarchicalPlanner(BasePlanner):
 
         # 14. Technical Explanations & Comparisons
         if cap == CapabilityClass.TECHNICAL_EXPLANATION:
-            is_comp = any(w in lower_prompt for w in ("compare", "versus", "vs", "difference", "differ"))
+            is_comp = any(w in lower_prompt for w in ("compare", "versus", "vs", "difference", "differ", "different", "side by side", "which one", "between"))
             mode = "comparison" if is_comp else "explanation"
             return self._plan_knowledge_task(request, tool_registry, mode=mode)
 
@@ -491,12 +512,67 @@ class HierarchicalPlanner(BasePlanner):
         )
         step_id = "step_workspace_restoration"
 
+        meta = (
+            request.context.metadata
+            if (request.context and isinstance(getattr(request.context, "metadata", None), dict))
+            else {}
+        )
+        dry_run = getattr(request.context, "dry_run", False) if request.context else False
+
+        lower_prompt = request.user_prompt.lower()
+        is_preview = any(k in lower_prompt for k in ("dry run", "dry-run", "preview", "plan only", "what would you restore"))
+
+        # Default execute to True for genuine restoration capability unless dry_run or preview is requested
+        execute = meta.get("execute", True)
+        if dry_run or is_preview:
+            execute = False
+
+        params: Dict[str, Any] = {
+            "query": request.user_prompt,
+            "execute": execute,
+        }
+
+        # Session ID propagation
+        if "session_id" in meta and meta["session_id"]:
+            params["session_id"] = meta["session_id"]
+        elif request.context and getattr(request.context, "session_id", None):
+            params["session_id"] = request.context.session_id
+
+        # Target resource propagation (metadata or extracted from prompt)
+        if "target_resource" in meta and meta["target_resource"]:
+            params["target_resource"] = meta["target_resource"]
+        else:
+            proj_match = re.search(
+                r"\b(?:open|resume)\s+project\s+([a-zA-Z0-9_\-\.]+)\b",
+                request.user_prompt,
+                re.IGNORECASE,
+            )
+            if proj_match:
+                params["target_resource"] = proj_match.group(1).strip()
+
+        # Reference time propagation
+        if "reference_time" in meta and meta["reference_time"]:
+            params["reference_time"] = meta["reference_time"]
+        elif "request_timestamp" in meta and meta["request_timestamp"]:
+            params["reference_time"] = meta["request_timestamp"]
+
+        step_title = (
+            "Restore workspace and reopen applications"
+            if execute
+            else "Generate and validate workspace restoration plan"
+        )
+        step_desc = (
+            "Reconstructs and launches verified workspace windows, applications, and layout."
+            if execute
+            else "Queries Intent Continuity Engine evidence to reconstruct multi-application windows and layout without mutating state."
+        )
+
         step = TaskStep(
             step_id=step_id,
-            title="Generate and validate workspace restoration plan",
-            description="Queries Intent Continuity Engine evidence to reconstruct multi-application windows and layout.",
+            title=step_title,
+            description=step_desc,
             tool_name=tool.name,
-            parameters={"query": request.user_prompt, "execute": False},
+            parameters=params,
             dependencies=[],
             state=TaskState.READY,
             risk_level=tool.risk_level,
@@ -553,12 +629,20 @@ class HierarchicalPlanner(BasePlanner):
         tool = tool_registry.get_or_raise("continuity_tool")
         step_id = "step_continuity"
 
+        ref_time = None
+        if request.context and isinstance(request.context.metadata, dict):
+            ref_time = request.context.metadata.get("request_timestamp")
+
+        params = {"query": request.user_prompt}
+        if ref_time:
+            params["reference_time"] = ref_time
+
         step = TaskStep(
             step_id=step_id,
             title="Retrieve workspace continuity context",
             description="Queries stored ORBIS sessions, Context DNA, and Knowledge Graph.",
             tool_name=tool.name,
-            parameters={"query": request.user_prompt},
+            parameters=params,
             dependencies=[],
             state=TaskState.READY,
             risk_level=tool.risk_level,
@@ -812,6 +896,22 @@ class HierarchicalPlanner(BasePlanner):
         elif action == "unmute":
             step_title = "Unmute System Audio"
             step_desc = "Unmutes master audio endpoint with post-mutation verification."
+        elif action == "set_brightness":
+            parameters["level"] = level
+            step_title = f"Set Display Brightness to {level}%"
+            step_desc = f"Sets display brightness to {level}% with post-mutation verification."
+        elif action == "get_brightness":
+            step_title = "Get Display Brightness"
+            step_desc = "Retrieves current display brightness level."
+        elif action == "set_battery_saver":
+            step_title = "Toggle Battery Saver"
+            step_desc = "Toggles or checks power saving state."
+        elif action == "get_power_status":
+            step_title = "Get Power Status"
+            step_desc = "Retrieves battery and AC power status."
+        elif action == "get_windows_settings":
+            step_title = "Check Windows Settings"
+            step_desc = "Queries system settings such as dark mode and OS build."
         else:
             step_title = f"System Control ({action})"
             step_desc = f"Executes system control action '{action}'."
@@ -829,6 +929,134 @@ class HierarchicalPlanner(BasePlanner):
             requires_approval=False,
         )
 
+        plan = TaskPlan(
+            request_id=request.request_id,
+            user_prompt=request.user_prompt,
+            task_type=TaskType.SINGLE_STEP,
+            root_step_ids=[step_id],
+            steps={step_id: step},
+        )
+        PlanValidator.validate_plan_or_raise(plan, tool_registry=tool_registry)
+        return plan
+
+    def _plan_app_launch_task(
+        self, request: AgentRequest, tool_registry: ToolRegistry
+    ) -> TaskPlan:
+        """Constructs a deterministic plan for safe application launching."""
+        prompt = request.user_prompt.strip()
+        launch_tool = tool_registry.get("app_launch")
+        if launch_tool is None:
+            return self._plan_default_fallback(request, tool_registry)
+
+        params = extract_app_launch_metadata(prompt)
+        step_id = "step_app_launch"
+        step = TaskStep(
+            step_id=step_id,
+            title=f"Application Action ({params.get('action')})",
+            description=f"Executes controlled application launch action: {params}",
+            tool_name=launch_tool.name,
+            parameters=params,
+            dependencies=[],
+            state=TaskState.READY,
+            risk_level=launch_tool.risk_level,
+            requires_approval=False,
+        )
+        plan = TaskPlan(
+            request_id=request.request_id,
+            user_prompt=request.user_prompt,
+            task_type=TaskType.SINGLE_STEP,
+            root_step_ids=[step_id],
+            steps={step_id: step},
+        )
+        PlanValidator.validate_plan_or_raise(plan, tool_registry=tool_registry)
+        return plan
+
+    def _plan_network_control_task(
+        self, request: AgentRequest, tool_registry: ToolRegistry
+    ) -> TaskPlan:
+        """Constructs a deterministic plan for Wi-Fi and Bluetooth network control."""
+        prompt = request.user_prompt.strip()
+        net_tool = tool_registry.get("network_control")
+        if net_tool is None:
+            return self._plan_default_fallback(request, tool_registry)
+
+        params = extract_network_control_metadata(prompt)
+        step_id = "step_network_control"
+        step = TaskStep(
+            step_id=step_id,
+            title=f"Network Action ({params.get('action')})",
+            description=f"Executes controlled network action: {params}",
+            tool_name=net_tool.name,
+            parameters=params,
+            dependencies=[],
+            state=TaskState.READY,
+            risk_level=net_tool.risk_level,
+            requires_approval=False,
+        )
+        plan = TaskPlan(
+            request_id=request.request_id,
+            user_prompt=request.user_prompt,
+            task_type=TaskType.SINGLE_STEP,
+            root_step_ids=[step_id],
+            steps={step_id: step},
+        )
+        PlanValidator.validate_plan_or_raise(plan, tool_registry=tool_registry)
+        return plan
+
+    def _plan_hardware_control_task(
+        self, request: AgentRequest, tool_registry: ToolRegistry
+    ) -> TaskPlan:
+        """Constructs a deterministic plan for RGB lighting and game launcher."""
+        prompt = request.user_prompt.strip()
+        hw_tool = tool_registry.get("hardware_control")
+        if hw_tool is None:
+            return self._plan_default_fallback(request, tool_registry)
+
+        params = extract_hardware_control_metadata(prompt)
+        step_id = "step_hardware_control"
+        step = TaskStep(
+            step_id=step_id,
+            title=f"Hardware Action ({params.get('action')})",
+            description=f"Executes controlled hardware action: {params}",
+            tool_name=hw_tool.name,
+            parameters=params,
+            dependencies=[],
+            state=TaskState.READY,
+            risk_level=hw_tool.risk_level,
+            requires_approval=False,
+        )
+        plan = TaskPlan(
+            request_id=request.request_id,
+            user_prompt=request.user_prompt,
+            task_type=TaskType.SINGLE_STEP,
+            root_step_ids=[step_id],
+            steps={step_id: step},
+        )
+        PlanValidator.validate_plan_or_raise(plan, tool_registry=tool_registry)
+        return plan
+
+    def _plan_messaging_task(
+        self, request: AgentRequest, tool_registry: ToolRegistry
+    ) -> TaskPlan:
+        """Constructs a plan for high-risk messaging, strictly gated behind human approval."""
+        prompt = request.user_prompt.strip()
+        msg_tool = tool_registry.get("messaging")
+        if msg_tool is None:
+            return self._plan_default_fallback(request, tool_registry)
+
+        params = extract_messaging_metadata(prompt)
+        step_id = "step_messaging"
+        step = TaskStep(
+            step_id=step_id,
+            title=f"Send {params.get('channel', 'message').title()} Message",
+            description=f"Sends message to '{params.get('recipient')}' via {params.get('channel')}.",
+            tool_name=msg_tool.name,
+            parameters=params,
+            dependencies=[],
+            state=TaskState.READY,
+            risk_level=RiskLevel.HIGH,
+            requires_approval=True,
+        )
         plan = TaskPlan(
             request_id=request.request_id,
             user_prompt=request.user_prompt,
@@ -1163,13 +1391,34 @@ class HierarchicalPlanner(BasePlanner):
                 return plan
             raise ValueError("Knowledge tool required for general information.")
 
+        parameters: Dict[str, Any] = {"query": request.user_prompt.strip(), "mode": mode}
+        if mode == "comparison":
+            meta = getattr(request.context, "metadata", {}) or {}
+            comp = meta.get("comparison")
+            if comp and isinstance(comp, dict):
+                parameters["concept_a"] = comp.get("concept_a")
+                parameters["concept_b"] = comp.get("concept_b")
+                parameters["dimension"] = comp.get("dimension")
+            elif hasattr(comp, "concept_a"):
+                parameters["concept_a"] = comp.concept_a
+                parameters["concept_b"] = comp.concept_b
+                parameters["dimension"] = comp.dimension
+            else:
+                from core.agent.conversation import extract_comparison_pair
+                ca, cb, dim = extract_comparison_pair(request.user_prompt)
+                if ca and cb:
+                    parameters["concept_a"] = ca
+                    parameters["concept_b"] = cb
+                    if dim:
+                        parameters["dimension"] = dim
+
         step_id = "step_knowledge_synthesis"
         step = TaskStep(
             step_id=step_id,
             title=f"Knowledge Synthesis ({mode})",
             description="Synthesizes factual knowledge, conceptual explanation, or comparison.",
             tool_name=know_tool.name,
-            parameters={"query": request.user_prompt.strip(), "mode": mode},
+            parameters=parameters,
             dependencies=[],
             state=TaskState.READY,
             risk_level=know_tool.risk_level,
@@ -1315,27 +1564,46 @@ class HierarchicalPlanner(BasePlanner):
     def _extract_document_metadata(self, prompt: str) -> tuple[str, str, str, str]:
         """
         Extracts (topic, content_type, format, filename) from user prompt.
+        Supports markdown (.md), text (.txt), docx (.docx), pptx (.pptx), pdf (.pdf), xlsx (.xlsx).
         """
         lower = prompt.lower()
 
-        # Determine format
-        if any(k in lower for k in (".txt", "plain text", "text file", "text document")):
+        # 1. Determine format and default extension
+        if any(k in lower for k in (".xlsx", "excel", "spreadsheet", "sheet", "csv")):
+            doc_format = "xlsx"
+            default_ext = ".xlsx"
+        elif any(k in lower for k in (".docx", "word doc", "word document")):
+            doc_format = "docx"
+            default_ext = ".docx"
+        elif any(k in lower for k in (".pptx", "presentation", "powerpoint", "slides", "deck", "slide deck")):
+            doc_format = "pptx"
+            default_ext = ".pptx"
+        elif any(k in lower for k in (".pdf", "pdf document", "pdf file", "pdf report")):
+            doc_format = "pdf"
+            default_ext = ".pdf"
+        elif any(k in lower for k in (".txt", "plain text", "text file", "text document")):
             doc_format = "text"
             default_ext = ".txt"
         else:
             doc_format = "markdown"
             default_ext = ".md"
 
-        # Determine content type and default name
+        # 2. Determine content type and default name
         if "readme" in lower:
             content_type = "readme"
-            default_name = "README.md"
+            default_name = f"README{default_ext}"
         elif "recommend" in lower or "recommendation" in lower or "recommendations" in lower:
             content_type = "document"
             default_name = f"recommendations{default_ext}"
         elif "study notes" in lower or "notes" in lower:
             content_type = "document"
             default_name = f"study_notes{default_ext}"
+        elif any(k in lower for k in ("spreadsheet", "excel", "sheet", "inventory", "table", "tracker")):
+            content_type = "document"
+            default_name = f"spreadsheet{default_ext}"
+        elif any(k in lower for k in ("presentation", "slides", "deck", "powerpoint")):
+            content_type = "document"
+            default_name = f"presentation{default_ext}"
         elif "summary" in lower or "summarize" in lower:
             content_type = "summary"
             default_name = f"summary{default_ext}"
@@ -1346,37 +1614,46 @@ class HierarchicalPlanner(BasePlanner):
             content_type = "document"
             default_name = f"document{default_ext}"
 
-        # Look for explicit filename in prompt
-        match = re.search(r"\b[\w\-./\\]+\.(?:md|txt)\b", prompt, re.IGNORECASE)
+        # 3. Look for explicit filename in prompt
+        match = re.search(r"\b[\w\-./\\]+\.(?:md|txt|docx|pptx|pdf|xlsx)\b", prompt, re.IGNORECASE)
         if match:
             filename = match.group(0).strip("'\"")
+            ext = Path(filename).suffix.lower()
+            ext_map = {".md": "markdown", ".txt": "text", ".docx": "docx", ".pptx": "pptx", ".pdf": "pdf", ".xlsx": "xlsx"}
+            if ext in ext_map:
+                doc_format = ext_map[ext]
         else:
-            filename = default_name
+            name_match = re.search(r"\b(?:named|called)\s+([a-zA-Z0-9_\-]+)\b", prompt, re.IGNORECASE)
+            if name_match:
+                filename = f"{name_match.group(1)}{default_ext}"
+            else:
+                filename = default_name
 
-        # Extract clean topic
+        # 4. Extract clean topic
         clean_topic = prompt
-
-        # 1. Strip trailing document creation clauses preceded by conjunction/punctuation
         clean_topic = re.sub(
-            r"(?i)(?:,\s*|\s+and\s+|\s*;\s*)(?:create|write|generate|make|save)\s+(?:a\s+)?(?:[\w\-]+\s+)?(?:file|document|report|readme|markdown|notes|study\s+notes|recommendations|text).*$",
+            r"(?i)(?:,\s*|\s+and\s+|\s*;\s*)(?:create|write|generate|make|save)\s+(?:a\s+)?(?:[\w\-]+\s+)?(?:file|document|report|readme|markdown|notes|study\s+notes|recommendations|text|spreadsheet|presentation|excel|deck).*$",
             "",
             clean_topic,
         )
-        # 2. Strip trailing summarization clauses like ", summarize it" or "and summarize it"
         clean_topic = re.sub(r"(?i)(?:,\s*|\s+and\s+|\s*;\s*)summarize\s+it.*$", "", clean_topic)
 
-        # 3. Strip leading action verbs
         clean_topic = re.sub(
             r"(?i)^(?:find|search\s+(?:the\s+web\s+)?for|research|explore|investigate|lookup)\s+",
             "",
             clean_topic,
         )
         clean_topic = re.sub(
-            r"(?i)^(?:create|write|generate|make)\s+(?:a\s+)?(?:readme\s+for|report\s+on|report\s+about|document\s+about|document\s+for|notes\s+on|study\s+notes\s+on)\s+",
+            r"(?i)^(?:create|write|generate|make)\s+(?:an?\s+)?(?:excel\s+|word\s+|pdf\s+|powerpoint\s+)?(?:spreadsheet|document|presentation|report|file|deck|slides|readme)\s+(?:named|called)\s+[\w\-./\\]+\s*",
             "",
             clean_topic,
         )
-        clean_topic = clean_topic.strip(" .,;?!'\"") or "ORBIS Topic"
+        clean_topic = re.sub(
+            r"(?i)^(?:create|write|generate|make)\s+(?:an?\s+)?(?:excel\s+|word\s+|pdf\s+|powerpoint\s+)?(?:spreadsheet|document|presentation|report|file|deck|slides|readme)\s*(?:for|on|about)?\s*",
+            "",
+            clean_topic,
+        )
+        clean_topic = clean_topic.strip(" .,;?!'\"") or "ORBIS Document"
 
         return clean_topic, content_type, doc_format, filename
 

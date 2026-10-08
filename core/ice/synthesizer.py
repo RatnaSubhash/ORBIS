@@ -6,10 +6,11 @@ Maintains authoritative deterministic baseline and provides optional constrained
 
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from uuid import uuid4
 
-from core.agent.llm.base import BaseLLMProvider
+if TYPE_CHECKING:
+    from core.agent.llm.base import BaseLLMProvider
 from core.ice.classifier import TaskStateClassifier
 from core.ice.extractor import ExtractedSessionContext
 from core.ice.models import (
@@ -35,7 +36,7 @@ class IntentSynthesizer:
 
     def __init__(
         self,
-        llm_provider: Optional[BaseLLMProvider] = None,
+        llm_provider: Optional["BaseLLMProvider"] = None,
         scorer: Optional[ContinuityScorer] = None,
         classifier: Optional[TaskStateClassifier] = None,
     ) -> None:

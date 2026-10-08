@@ -105,17 +105,17 @@ def test_get_sessions_chronological_and_time_range() -> None:
     db.record_session(s2)
     db.record_session(s3)
 
-    # 1. Fetch all
+    # 1. Fetch all (ordered newest-first DESC)
     all_sessions = db.get_sessions()
     assert len(all_sessions) == 3
-    assert all_sessions[0].session_id == "sess_1"
+    assert all_sessions[0].session_id == "sess_3"
     assert all_sessions[1].session_id == "sess_2"
-    assert all_sessions[2].session_id == "sess_3"
+    assert all_sessions[2].session_id == "sess_1"
 
     # 2. Limit
     limited = db.get_sessions(limit=2)
     assert len(limited) == 2
-    assert limited[0].session_id == "sess_1"
+    assert limited[0].session_id == "sess_3"
 
     # 3. Time range filter
     range_filtered = db.get_sessions(

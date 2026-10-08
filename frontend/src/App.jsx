@@ -1,20 +1,28 @@
 /**
- * ORBIS App root.
+ * ORBIS App Root.
  *
- * This is intentionally minimal — all state, gateway logic, and visual identity
- * are owned by OrbisCore. App.jsx exists only to mount OrbisCore inside the
- * page-level shell and apply the outermost layout class.
+ * Mounts:
+ *   - AgentProvider (central state, task dispatch, active view navigation, voice, system controls)
+ *   - AwakeningSequence (5-phase startup sequence orchestrator)
+ *   - OrbisShell (single unified shell hosting the Globe, active view, and OptionWheel)
  */
+
+import { AgentProvider } from './state/AgentContext';
 import { AwakeningSequence } from './components/core/AwakeningSequence';
-import { OrbisCore } from './components/OrbisCore';
+import { OrbisShell } from './components/views/Shell';
+import ErrorBoundary from './components/ui/ErrorBoundary';
 
 export function App() {
   return (
-    <div className="orbis-app">
-      <AwakeningSequence>
-        <OrbisCore />
-      </AwakeningSequence>
-    </div>
+    <AgentProvider>
+      <div className="orbis-app">
+        <AwakeningSequence>
+          <ErrorBoundary title="Primary Shell Guard: isolated an unhandled presentation error.">
+            <OrbisShell />
+          </ErrorBoundary>
+        </AwakeningSequence>
+      </div>
+    </AgentProvider>
   );
 }
 

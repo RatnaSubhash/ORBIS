@@ -7,6 +7,7 @@ CORS policy, and machine-readable user-safe error handling.
 from contextlib import asynccontextmanager
 import logging
 import os
+import sys
 from typing import AsyncGenerator, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request, status
@@ -15,9 +16,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from core.agent.orchestrator import AgentOrchestrator
+from core.config import get_settings
 from core.events.bus import EventBus
 from core.gateway import routes, websocket
 from core.gateway.task_manager import TaskManager
+from core.memory.db import DatabaseManager
+from core.observation.service import WorkspaceObservationService
+from core.types import WorkspaceEvent
 from core.voice.models import VoiceState
 
 logger = logging.getLogger("orbis.gateway.app")
@@ -48,21 +53,72 @@ def create_app(
     event_bus: Optional[EventBus] = None,
     task_manager: Optional[TaskManager] = None,
     allowed_origins: Optional[List[str]] = None,
+    db_manager: Optional[DatabaseManager] = None,
+    observation_service: Optional[WorkspaceObservationService] = None,
 ) -> FastAPI:
     """
     Creates and configures an ORBIS Gateway FastAPI application.
-    Injects existing AgentOrchestrator and EventBus instances without duplication.
+    Injects existing AgentOrchestrator, EventBus, DatabaseManager, and WorkspaceObservationService.
     """
-    # 1. Resolve or lazily construct shared event bus & orchestrator
+    settings = get_settings()
+
+    # 1. Resolve canonical persistent DatabaseManager
+    db = db_manager
+    if db is None:
+        db = DatabaseManager(db_path=settings.db_path)
+        db.initialize()
+
+    # 2. Resolve or lazily construct shared event bus & orchestrator
     bus = event_bus or (orchestrator.event_bus if orchestrator and orchestrator.event_bus else EventBus())
     mgr = task_manager or TaskManager()
 
-    # If no orchestrator provided, build default orchestrator lazily
+    # 3. Resolve or construct WorkspaceObservationService & real-time session builder
+    obs_svc = observation_service
+    session_builder: Optional[Any] = None
+    synthesizer: Optional[Any] = None
+
+    if obs_svc is None and settings.observation_enabled:
+        if getattr(settings, "orbis_env", "development") == "test":
+            from core.observation.mock import MockWorkspaceObserver
+            observer = MockWorkspaceObserver()
+        elif sys.platform == "win32":
+            from core.observation.windows import WindowsWorkspaceObserver
+            observer = WindowsWorkspaceObserver()
+        else:
+            from core.observation.mock import MockWorkspaceObserver
+            observer = MockWorkspaceObserver()
+
+        obs_svc = WorkspaceObservationService(
+            observer=observer,
+            db_manager=db,
+            polling_interval=settings.observation_interval,
+        )
+
+    if obs_svc is not None:
+        from core.continuity.sessionizer import IncrementalSessionBuilder
+        from core.continuity.dna import ContextDNASynthesizer
+
+        session_builder = IncrementalSessionBuilder(
+            session_gap_seconds=settings.session_gap_minutes * 60.0
+        )
+        synthesizer = ContextDNASynthesizer()
+
+        async def _on_workspace_event_sessionizer(event: WorkspaceEvent) -> None:
+            try:
+                finalized = session_builder.add_event(event)
+                if finalized:
+                    db.record_session(finalized)
+                    dna = synthesizer.synthesize(finalized)
+                    db.record_context_dna(dna)
+            except Exception as exc:
+                logger.warning("Sessionizer event listener encountered error: %s", exc)
+
+        obs_svc.add_event_listener(_on_workspace_event_sessionizer)
+
+    # 4. If no orchestrator provided, build default orchestrator lazily
     orch = orchestrator
     if orch is None:
-        from core.config import get_settings
         from core.tools.registry import create_default_tool_registry
-        settings = get_settings()
         if getattr(settings, "orbis_env", "development") == "test":
             from core.agent.llm.mock import MockLLMProvider
             llm = MockLLMProvider()
@@ -74,25 +130,43 @@ def create_app(
                 logger.error("Failed to initialize configured LLM provider (%s): %s. Setting llm=None.", getattr(settings, "llm_provider", "unknown"), exc)
                 llm = None
 
-        reg = create_default_tool_registry(llm_provider=llm)
+        reg = create_default_tool_registry(llm_provider=llm, db=db)
         orch = AgentOrchestrator(
             llm_provider=llm,
             tool_registry=reg,
+            db_manager=db,
             event_bus=bus,
         )
 
-
-    # 2. Lifespan context manager for safe shutdown & resource cleanup
+    # 5. Lifespan context manager for safe shutdown & resource cleanup
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.info("Starting ORBIS Gateway service.")
         app.state.orchestrator = orch
         app.state.event_bus = bus
         app.state.task_manager = mgr
+        app.state.db_manager = db
+        app.state.observation_service = obs_svc
+        app.state.session_builder = session_builder
+
+        if obs_svc is not None:
+            obs_svc.start()
 
         yield
 
         logger.info("Shutting down ORBIS Gateway service. Cleaning up background tasks.")
+        if obs_svc is not None and obs_svc.is_running:
+            await obs_svc.stop()
+            if session_builder and synthesizer:
+                try:
+                    trailing = session_builder.finalize()
+                    if trailing:
+                        db.record_session(trailing)
+                        dna = synthesizer.synthesize(trailing)
+                        db.record_context_dna(dna)
+                except Exception as exc:
+                    logger.warning("Error finalizing trailing session on shutdown: %s", exc)
+
         if getattr(orch, "voice_service", None) and getattr(orch.voice_service, "state", None) == VoiceState.LISTENING:
             try:
                 audio = orch.voice_service.stop_listening()
@@ -113,8 +187,11 @@ def create_app(
     app.state.orchestrator = orch
     app.state.event_bus = bus
     app.state.task_manager = mgr
+    app.state.db_manager = db
+    app.state.observation_service = obs_svc
+    app.state.session_builder = session_builder
 
-    # 3. CORS Middleware configuration
+    # 6. CORS Middleware configuration
     origins = resolve_cors_origins(allowed_origins)
     app.add_middleware(
         CORSMiddleware,
@@ -124,11 +201,13 @@ def create_app(
         allow_headers=["*"],
     )
 
-    # 4. Dependency Overrides
+    # 7. Dependency Overrides
     app.dependency_overrides[routes.get_orchestrator] = lambda: orch
     app.dependency_overrides[routes.get_task_manager] = lambda: mgr
     app.dependency_overrides[routes.get_event_bus] = lambda: bus
     app.dependency_overrides[websocket.get_event_bus] = lambda: bus
+    app.dependency_overrides[routes.get_db_manager] = lambda: db
+    app.dependency_overrides[routes.get_observation_service] = lambda: obs_svc
 
     # 5. Include Routers
     app.include_router(routes.router)
@@ -171,3 +250,9 @@ def create_app(
         )
 
     return app
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("core.gateway.app:create_app", factory=True, host="127.0.0.1", port=8000, reload=False)
+

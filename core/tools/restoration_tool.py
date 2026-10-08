@@ -4,6 +4,7 @@ Exposes declarative workspace reconstruction capabilities via the BaseTool contr
 enabling the Agent Orchestrator to restore multi-app window layouts and resources.
 """
 
+from datetime import datetime
 from typing import Any, Callable, Optional
 from pydantic import BaseModel, Field
 
@@ -23,6 +24,18 @@ class RestorationToolParameters(BaseModel):
     execute: bool = Field(
         default=False,
         description="Whether to execute the restoration plan (requires approval callback/policy) or only generate and validate it.",
+    )
+    session_id: Optional[str] = Field(
+        default=None,
+        description="Optional session ID to restore directly.",
+    )
+    target_resource: Optional[str] = Field(
+        default=None,
+        description="Optional explicit project or resource target.",
+    )
+    reference_time: Optional[datetime] = Field(
+        default=None,
+        description="Optional continuity cutoff timestamp.",
     )
 
 
@@ -65,8 +78,25 @@ class RestorationTool(BaseTool):
             else RestorationToolParameters.model_validate(params)
         )
 
+        # Resolve reference_time from context if available
+        ref_time = typed_params.reference_time
+        if ref_time is None and context and isinstance(context.metadata, dict):
+            raw_ref = context.metadata.get("request_timestamp") or context.metadata.get("reference_time")
+            if raw_ref and isinstance(raw_ref, str):
+                try:
+                    ref_time = datetime.fromisoformat(raw_ref)
+                except Exception:
+                    pass
+            elif isinstance(raw_ref, datetime):
+                ref_time = raw_ref
+
         # 1. Create and preflight-validate declarative plan
-        plan, ice_result, message = await self.engine.create_restoration_plan(typed_params.query)
+        plan, ice_result, message = await self.engine.create_restoration_plan(
+            query=typed_params.query,
+            session_id=typed_params.session_id,
+            target_resource=typed_params.target_resource,
+            reference_time=ref_time,
+        )
 
         if not plan:
             return ToolResult(
@@ -99,9 +129,13 @@ class RestorationTool(BaseTool):
             )
 
         # 3. If execute=True, execute via RestorationEngine
+        approval_cb = self.approval_callback
+        if approval_cb is None and context and isinstance(getattr(context, "metadata", None), dict):
+            approval_cb = context.metadata.get("approval_callback")
+
         res: RestorationResult = await self.engine.execute_restoration_plan(
             plan=plan,
-            approval_callback=self.approval_callback,
+            approval_callback=approval_cb,
         )
 
         return ToolResult(

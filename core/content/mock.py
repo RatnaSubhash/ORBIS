@@ -31,7 +31,7 @@ class MockContentGenerator(BaseContentGenerator):
         self,
         topic: str,
         content_type: Literal["report", "summary", "readme", "document"] = "report",
-        format: Literal["markdown", "text"] = "markdown",
+        format: Literal["markdown", "text", "docx", "pptx", "pdf", "xlsx"] = "markdown",
         context_data: Optional[str] = None,
         source_references: Optional[List[str]] = None,
         max_length_chars: int = 10000,
@@ -121,7 +121,45 @@ class MockContentGenerator(BaseContentGenerator):
         sources = source_references or []
         has_ctx = bool(context_data and context_data.strip())
 
-        if format == "markdown":
+        if format == "xlsx":
+            cols_match = re.search(r"\bcolumns?\s+(.+)$", topic, re.IGNORECASE)
+            if cols_match:
+                raw_cols = cols_match.group(1).replace("and", ",").split(",")
+                headers = [c.strip(" .,;?!'\"") for c in raw_cols if c.strip(" .,;?!'\"")]
+            else:
+                headers = ["ID", "Item", "Category", "Status", "Notes"]
+
+            table_lines = [
+                "| " + " | ".join(headers) + " |",
+                "| " + " | ".join(["---"] * len(headers)) + " |",
+            ]
+            for i in range(1, 4):
+                row = []
+                for h in headers:
+                    hl = h.lower()
+                    if "id" in hl:
+                        row.append(str(i))
+                    elif "status" in hl:
+                        row.append("Active" if i != 2 else "Completed")
+                    elif "capab" in hl:
+                        row.append(["Natural-Language Q&A", "Workspace Continuity", "Office Document Workflows"][i - 1])
+                    elif "priority" in hl:
+                        row.append(["High", "Medium", "Critical"][i - 1])
+                    else:
+                        row.append(f"{h} {i}")
+                table_lines.append("| " + " | ".join(row) + " |")
+            return "\n".join(table_lines) + "\n"
+
+        elif format == "pptx":
+            slides = [
+                f"# {title}\nORBIS Automated Workspace Synthesis\n",
+                f"## Executive Overview\n- Strategic focus: {topic}\n- Verified against local workspace parameters\n- Deterministic execution and safety guarantees\n",
+                f"## Key Architectural Findings\n- Grounded in SQLite and Knowledge Graph memory\n- Sub-second retrieval with zero hallucination\n- Independent post-execution file verification\n",
+                f"## Operational Next Steps\n- Production continuity monitoring\n- Event streaming verification via EventBus\n- Automated test coverage at 100%\n",
+            ]
+            return "\n---\n".join(slides) + "\n"
+
+        elif format in ("markdown", "docx", "pdf"):
             sections = [f"# {title}\n"]
 
             if content_type == "readme":

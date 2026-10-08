@@ -44,4 +44,5 @@ htmlcov/
 # IDE
 .vscode/
 .idea/
+.gemini/
 *.swp

@@ -182,7 +182,7 @@ class Settings(BaseSettings):
         description="Max character length for generated content",
     )
     document_allowed_extensions: List[str] = Field(
-        default_factory=lambda: [".md", ".txt"],
+        default_factory=lambda: [".md", ".txt", ".docx", ".pptx", ".pdf", ".xlsx"],
         description="Allowed file extensions for DocumentTool persistence",
     )
 

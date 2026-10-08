@@ -37,9 +37,38 @@ class AppDescriptor(BaseModel):
 
         for raw_path in self.canonical_paths:
             expanded = os.path.expandvars(raw_path)
-            candidate = Path(expanded).resolve()
-            if candidate.is_file() and os.access(candidate, os.X_OK):
-                return candidate
+            if "*" in expanded:
+                import glob
+                matches = glob.glob(expanded)
+                for m in sorted(matches, reverse=True):
+                    candidate = Path(m).resolve()
+                    if candidate.is_file() and os.access(candidate, os.X_OK):
+                        return candidate
+            else:
+                candidate = Path(expanded).resolve()
+                if candidate.is_file() and os.access(candidate, os.X_OK):
+                    return candidate
+
+        # On Windows, query authoritative Registry App Paths without ambient PATH lookup
+        if os.name == "nt":
+            try:
+                import winreg
+                for p_name in self.process_names:
+                    if not p_name.lower().endswith(".exe"):
+                        continue
+                    for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+                        sub = rf"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{p_name}"
+                        try:
+                            with winreg.OpenKey(root, sub) as key:
+                                val, _ = winreg.QueryValueEx(key, "")
+                                if val:
+                                    cand = Path(val).resolve()
+                                    if cand.is_file() and os.access(cand, os.X_OK):
+                                        return cand
+                        except Exception:
+                            pass
+            except Exception:
+                pass
 
         return None
 
@@ -47,27 +76,47 @@ class AppDescriptor(BaseModel):
         """
         Builds discrete argument list for launching the application with a target.
         Strictly discrete arguments (shell=False).
+        Guarantees that even pure layout applications without explicit resource targets
+        open visible windows (e.g. Chrome opens --new-window, Explorer opens workspace root).
         """
+        from core.config import get_settings
+        settings = get_settings()
+        default_root = (
+            settings.allowed_workspace_root
+            if (settings.allowed_workspace_root and os.path.isdir(settings.allowed_workspace_root))
+            else os.getcwd()
+        )
+
         args: List[str] = []
+        target_val = (target.resolved_target or target.raw_target) if target else None
 
-        if not target or not target.resolved_target or target.target_type == ResourceTargetType.NONE:
-            return args
-
-        if self.identifier == "vscode":
-            # code "<path>"
-            args.extend([target.resolved_target])
+        if self.identifier in ("vscode", "antigravity"):
+            # code "<path>" or antigravity "<path>"
+            if target_val:
+                args.extend([target_val])
+            else:
+                args.extend([default_root])
         elif self.identifier == "terminal":
             # wt -d "<dir>"
-            if target.target_type == ResourceTargetType.DIRECTORY:
-                args.extend(["-d", target.resolved_target])
+            dir_target = target_val if (target and target.target_type == ResourceTargetType.DIRECTORY) else default_root
+            args.extend(["-d", dir_target])
         elif self.identifier in ("chrome", "edge"):
             # browser --new-window "<url>"
-            args.extend(["--new-window", target.resolved_target])
+            url_target = target_val if (target and target.target_type == ResourceTargetType.WEB_URL) else "about:blank"
+            args.extend(["--new-window", url_target])
         elif self.identifier == "notepad":
             # notepad "<file>"
-            args.extend([target.resolved_target])
+            if target_val:
+                args.extend([target_val])
+        elif self.identifier == "explorer":
+            # explorer "<dir>"
+            dir_target = target_val if target_val else default_root
+            args.extend([dir_target])
+        elif self.identifier == "snippingtool":
+            pass
         else:
-            args.extend([target.resolved_target])
+            if target_val:
+                args.extend([target_val])
 
         return args
 
@@ -97,12 +146,26 @@ class ApplicationRegistry:
                 supported_targets=[ResourceTargetType.WORKSPACE_FILE, ResourceTargetType.DIRECTORY],
             ),
             AppDescriptor(
+                identifier="antigravity",
+                display_name="Antigravity IDE",
+                process_names=["Antigravity IDE.exe", "Antigravity IDE", "Antigravity.exe", "antigravity.exe", "antigravity"],
+                canonical_paths=[
+                    r"%LOCALAPPDATA%\Programs\Antigravity IDE\Antigravity IDE.exe",
+                    r"%LOCALAPPDATA%\Programs\antigravity\Antigravity.exe",
+                    r"%ProgramFiles%\Antigravity IDE\Antigravity IDE.exe",
+                    r"%ProgramFiles%\Antigravity\Antigravity.exe",
+                ],
+                supported_targets=[ResourceTargetType.WORKSPACE_FILE, ResourceTargetType.DIRECTORY],
+            ),
+            AppDescriptor(
                 identifier="terminal",
                 display_name="Windows Terminal",
-                process_names=["WindowsTerminal.exe", "wt.exe"],
+                process_names=["WindowsTerminal.exe", "wt.exe", "powershell.exe", "cmd.exe"],
                 canonical_paths=[
                     r"%LOCALAPPDATA%\Microsoft\WindowsApps\wt.exe",
                     r"%ProgramFiles%\WindowsApps\Microsoft.WindowsTerminal_*\wt.exe",
+                    r"%SystemRoot%\System32\cmd.exe",
+                    r"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe",
                 ],
                 supported_targets=[ResourceTargetType.DIRECTORY],
             ),
@@ -134,8 +197,53 @@ class ApplicationRegistry:
                 canonical_paths=[
                     r"%SystemRoot%\System32\notepad.exe",
                     r"%SystemRoot%\notepad.exe",
+                    r"%LOCALAPPDATA%\Microsoft\WindowsApps\notepad.exe",
                 ],
                 supported_targets=[ResourceTargetType.WORKSPACE_FILE],
+            ),
+            AppDescriptor(
+                identifier="explorer",
+                display_name="File Explorer",
+                process_names=["explorer.exe", "Explorer.EXE"],
+                canonical_paths=[
+                    r"%SystemRoot%\explorer.exe",
+                    r"C:\Windows\explorer.exe",
+                ],
+                supported_targets=[ResourceTargetType.DIRECTORY, ResourceTargetType.WORKSPACE_FILE],
+            ),
+            AppDescriptor(
+                identifier="spotify",
+                display_name="Spotify",
+                process_names=["Spotify.exe", "spotify.exe"],
+                canonical_paths=[
+                    r"%APPDATA%\Spotify\Spotify.exe",
+                    r"%LOCALAPPDATA%\Microsoft\WindowsApps\Spotify.exe",
+                    r"%ProgramFiles%\WindowsApps\SpotifyAB.SpotifyMusic_*\Spotify.exe",
+                    r"%ProgramFiles%\Spotify\Spotify.exe",
+                ],
+                supported_targets=[ResourceTargetType.NONE, ResourceTargetType.WEB_URL],
+            ),
+            AppDescriptor(
+                identifier="calculator",
+                display_name="Calculator",
+                process_names=["CalculatorApp.exe", "calc.exe", "Calculator.exe"],
+                canonical_paths=[
+                    r"%SystemRoot%\System32\calc.exe",
+                    r"C:\Windows\System32\calc.exe",
+                    r"%LOCALAPPDATA%\Microsoft\WindowsApps\calc.exe",
+                ],
+                supported_targets=[ResourceTargetType.NONE],
+            ),
+            AppDescriptor(
+                identifier="snippingtool",
+                display_name="Snipping Tool",
+                process_names=["SnippingTool.exe", "snippingtool.exe", "SnippingTool"],
+                canonical_paths=[
+                    r"%LOCALAPPDATA%\Microsoft\WindowsApps\SnippingTool.exe",
+                    r"%ProgramFiles%\WindowsApps\Microsoft.ScreenSketch_*\SnippingTool.exe",
+                    r"%SystemRoot%\System32\SnippingTool.exe",
+                ],
+                supported_targets=[ResourceTargetType.NONE, ResourceTargetType.WORKSPACE_FILE],
             ),
         ]
         return {app.identifier: app for app in defaults}

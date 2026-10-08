@@ -16,6 +16,10 @@ class ContinuityQueryType(str, Enum):
     RECENT_CONTEXT = "RECENT_CONTEXT"
     LAST_SESSION = "LAST_SESSION"
     GENERAL_CONTINUITY = "GENERAL_CONTINUITY"
+    APP_QUERY = "APP_QUERY"
+    PROJECT_QUERY = "PROJECT_QUERY"
+    FILE_QUERY = "FILE_QUERY"
+    WHAT_CHANGED_TODAY = "WHAT_CHANGED_TODAY"
 
 
 class ContinuityQuery(BaseModel):
@@ -23,6 +27,9 @@ class ContinuityQuery(BaseModel):
     query_text: str
     query_type: ContinuityQueryType = ContinuityQueryType.GENERAL_CONTINUITY
     time_window_hours: Optional[float] = None
+    cutoff_time: Optional[datetime] = None
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
     max_results: int = Field(default=3, ge=1, le=20)
 
 
@@ -48,6 +55,7 @@ class RetrievedContextEvidence(BaseModel):
     applications: List[str] = Field(default_factory=list)
     primary_application: Optional[str] = None
     resources: List[str] = Field(default_factory=list)
+    projects: List[str] = Field(default_factory=list)
     event_count: int = 0
     vector_similarity: Optional[float] = None
     provenance: ProvenanceSource = Field(default_factory=ProvenanceSource)
@@ -63,6 +71,7 @@ class ContinuityResponse(BaseModel):
     grounded_summary: str
     active_applications: List[str] = Field(default_factory=list)
     primary_resources: List[str] = Field(default_factory=list)
+    projects: List[str] = Field(default_factory=list)
     last_activity_timestamp: Optional[datetime] = None
     confidence_score: float = Field(
         default=0.0,

@@ -44,11 +44,11 @@ class DocumentActionParameters(BaseModel):
     content: str = Field(
         ...,
         min_length=1,
-        description="Text or Markdown content to write to the document.",
+        description="Text or structured content to write to the document.",
     )
-    format: Literal["markdown", "text"] = Field(
+    format: Literal["markdown", "text", "docx", "pptx", "pdf", "xlsx"] = Field(
         default="markdown",
-        description="Document format ('markdown' or 'text').",
+        description="Document format ('markdown', 'text', 'docx', 'pptx', 'pdf', or 'xlsx').",
     )
     overwrite: bool = Field(
         default=False,
@@ -196,16 +196,28 @@ class DocumentTool(BaseTool):
                 metadata={"size_bytes": len(encoded_bytes), "max_bytes": self.max_bytes},
             )
 
-        # 5. Write to filesystem
+        # 5. Write to filesystem according to format
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(clean_content, encoding="utf-8")
+            doc_format = self._infer_format(target, params.format)
 
+            if doc_format == "docx":
+                self._generate_docx(target, clean_content)
+            elif doc_format == "pptx":
+                self._generate_pptx(target, clean_content)
+            elif doc_format == "pdf":
+                self._generate_pdf(target, clean_content)
+            elif doc_format == "xlsx":
+                self._generate_xlsx(target, clean_content)
+            else:
+                target.write_text(clean_content, encoding="utf-8")
+
+            file_size_on_disk = target.stat().st_size
             output = {
                 "file_path": str(target),
                 "file_name": target.name,
-                "size_bytes": len(encoded_bytes),
-                "format": params.format,
+                "size_bytes": file_size_on_disk,
+                "format": doc_format,
                 "overwritten": file_existed,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
@@ -216,7 +228,8 @@ class DocumentTool(BaseTool):
                 metadata={
                     "file_path": str(target),
                     "overwritten": file_existed,
-                    "size_bytes": len(encoded_bytes),
+                    "size_bytes": file_size_on_disk,
+                    "format": doc_format,
                     "risk_level": RiskLevel.HIGH.value if file_existed else RiskLevel.LOW.value,
                 },
             )
@@ -227,12 +240,186 @@ class DocumentTool(BaseTool):
                 metadata={"file_path": str(target)},
             )
 
+    @staticmethod
+    def _infer_format(target: Path, explicit_format: str) -> str:
+        ext_to_fmt = {
+            ".md": "markdown",
+            ".txt": "text",
+            ".docx": "docx",
+            ".pptx": "pptx",
+            ".pdf": "pdf",
+            ".xlsx": "xlsx",
+        }
+        ext = target.suffix.lower()
+        if ext in ext_to_fmt and explicit_format == "markdown":
+            return ext_to_fmt[ext]
+        return explicit_format
+
+    def _generate_docx(self, target: Path, content: str) -> None:
+        from docx import Document
+        doc = Document()
+        lines = content.splitlines()
+        in_code_block = False
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("```"):
+                in_code_block = not in_code_block
+                continue
+            if in_code_block:
+                p = doc.add_paragraph(line)
+                p.style = "No Spacing"
+                continue
+            if stripped.startswith("# "):
+                doc.add_heading(stripped[2:].strip(), level=1)
+            elif stripped.startswith("## "):
+                doc.add_heading(stripped[3:].strip(), level=2)
+            elif stripped.startswith("### "):
+                doc.add_heading(stripped[4:].strip(), level=3)
+            elif stripped.startswith("- ") or stripped.startswith("* "):
+                doc.add_paragraph(stripped[2:].strip(), style="List Bullet")
+            elif re.match(r"^\d+\.\s+", stripped):
+                item_text = re.sub(r"^\d+\.\s+", "", stripped)
+                doc.add_paragraph(item_text, style="List Number")
+            elif stripped:
+                doc.add_paragraph(stripped)
+        doc.save(str(target))
+
+    def _generate_pptx(self, target: Path, content: str) -> None:
+        from pptx import Presentation
+        prs = Presentation()
+        raw_slides = re.split(r"\n---\n", content)
+        if len(raw_slides) <= 1:
+            sections = re.split(r"\n(?=##\s+)", content)
+            if len(sections) > 1:
+                raw_slides = sections
+
+        slide_index = 0
+        for s_text in raw_slides:
+            s_text = s_text.strip()
+            if not s_text:
+                continue
+            lines = [line.strip() for line in s_text.splitlines() if line.strip()]
+            if not lines:
+                continue
+
+            if slide_index == 0:
+                slide = prs.slides.add_slide(prs.slide_layouts[0])
+                title = slide.shapes.title
+                subtitle = slide.placeholders[1] if len(slide.placeholders) > 1 else None
+                title.text = lines[0].lstrip("#").strip()
+                if subtitle and len(lines) > 1:
+                    subtitle.text = "\n".join(lines[1:])
+            else:
+                slide = prs.slides.add_slide(prs.slide_layouts[1])
+                title = slide.shapes.title
+                content_shape = slide.placeholders[1] if len(slide.placeholders) > 1 else None
+                title.text = lines[0].lstrip("#").strip()
+                if content_shape and len(lines) > 1:
+                    tf = content_shape.text_frame
+                    tf.clear()
+                    for i, b_line in enumerate(lines[1:]):
+                        clean_line = b_line.lstrip("*-#0123456789. ")
+                        if i == 0:
+                            tf.text = clean_line
+                        else:
+                            p = tf.add_paragraph()
+                            p.text = clean_line
+            slide_index += 1
+
+        if slide_index == 0:
+            slide = prs.slides.add_slide(prs.slide_layouts[0])
+            slide.shapes.title.text = "ORBIS Presentation"
+
+        prs.save(str(target))
+
+    def _generate_pdf(self, target: Path, content: str) -> None:
+        import html
+        from reportlab.lib.pagesizes import letter
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+
+        doc = SimpleDocTemplate(str(target), pagesize=letter)
+        styles = getSampleStyleSheet()
+        story = []
+
+        lines = content.splitlines()
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                story.append(Spacer(1, 10))
+                continue
+            safe_line = html.escape(stripped)
+            if stripped.startswith("# "):
+                story.append(Paragraph(f"<b>{html.escape(stripped[2:].strip())}</b>", styles["Title"]))
+                story.append(Spacer(1, 12))
+            elif stripped.startswith("## "):
+                story.append(Paragraph(f"<b>{html.escape(stripped[3:].strip())}</b>", styles["Heading2"]))
+                story.append(Spacer(1, 8))
+            elif stripped.startswith("### "):
+                story.append(Paragraph(f"<b>{html.escape(stripped[4:].strip())}</b>", styles["Heading3"]))
+                story.append(Spacer(1, 6))
+            elif stripped.startswith("- ") or stripped.startswith("* "):
+                bullet_text = html.escape(stripped[2:].strip())
+                story.append(Paragraph(f"&bull; {bullet_text}", styles["Normal"]))
+                story.append(Spacer(1, 4))
+            else:
+                story.append(Paragraph(safe_line, styles["Normal"]))
+                story.append(Spacer(1, 6))
+
+        if not story:
+            story.append(Paragraph("ORBIS Document", styles["Title"]))
+
+        doc.build(story)
+
+    def _generate_xlsx(self, target: Path, content: str) -> None:
+        import csv
+        import io
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Sheet1"
+
+        lines = [line.strip() for line in content.splitlines() if line.strip()]
+        row_idx = 1
+        for line in lines:
+            if "|" in line:
+                cells = [c.strip() for c in line.split("|")]
+                if line.startswith("|"):
+                    cells = cells[1:]
+                if line.endswith("|"):
+                    cells = cells[:-1]
+                if all(re.match(r"^:?-+:?$", c) for c in cells if c):
+                    continue
+            elif "\t" in line:
+                cells = [c.strip() for c in line.split("\t")]
+            elif "," in line:
+                reader = csv.reader(io.StringIO(line))
+                cells = next(reader, [line])
+            else:
+                cells = [line]
+
+            for col_idx, val in enumerate(cells, start=1):
+                cell = ws.cell(row=row_idx, column=col_idx, value=val)
+                if row_idx == 1:
+                    cell.font = Font(bold=True)
+                    cell.fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
+            row_idx += 1
+
+        for col in ws.columns:
+            max_len = max(len(str(cell.value or "")) for cell in col)
+            col_letter = openpyxl.utils.get_column_letter(col[0].column)
+            ws.column_dimensions[col_letter].width = max(max_len + 3, 12)
+
+        wb.save(str(target))
+
     async def verify(
         self, params: BaseModel, result: ToolResult, context: ExecutionContext
     ) -> VerificationReport:
         """
         Independently verifies that the real-world file on disk matches expectations:
-        file exists, is within allowed root, non-empty, and contents match written data.
+        file exists, is within allowed root, non-empty, and format-valid.
         """
         if not result.success:
             return VerificationReport(
@@ -279,14 +466,49 @@ class DocumentTool(BaseTool):
         if file_size > self.max_bytes:
             discrepancies.append(f"Target document size ({file_size} bytes) exceeds maximum limit ({self.max_bytes} bytes).")
 
-        # 3. Content accuracy check
-        try:
-            disk_content = target.read_text(encoding="utf-8")
-            expected_content = redact_secrets(getattr(params, "content", ""))
-            if disk_content != expected_content:
-                discrepancies.append("Content on disk does not match expected sanitized document text.")
-        except Exception as read_err:
-            discrepancies.append(f"Failed to read document from disk for verification: {read_err}")
+        # 3. Format-specific validation
+        fmt = self._infer_format(target, getattr(params, "format", "markdown"))
+        if fmt in ("markdown", "text"):
+            try:
+                disk_content = target.read_text(encoding="utf-8")
+                expected_content = redact_secrets(getattr(params, "content", ""))
+                if disk_content != expected_content:
+                    discrepancies.append("Content on disk does not match expected sanitized document text.")
+            except Exception as read_err:
+                discrepancies.append(f"Failed to read document from disk for verification: {read_err}")
+        elif fmt == "docx":
+            try:
+                from docx import Document
+                d = Document(str(target))
+                if len(d.paragraphs) == 0 and len(d.tables) == 0:
+                    discrepancies.append("DOCX file was created but contains no paragraphs or tables.")
+            except Exception as e:
+                discrepancies.append(f"Failed to parse created DOCX file: {e}")
+        elif fmt == "pptx":
+            try:
+                from pptx import Presentation
+                prs = Presentation(str(target))
+                if len(prs.slides) == 0:
+                    discrepancies.append("PPTX file was created but contains 0 slides.")
+            except Exception as e:
+                discrepancies.append(f"Failed to parse created PPTX file: {e}")
+        elif fmt == "pdf":
+            try:
+                with open(target, "rb") as f:
+                    header = f.read(5)
+                if not header.startswith(b"%PDF-"):
+                    discrepancies.append("PDF file does not have a valid %PDF header.")
+            except Exception as e:
+                discrepancies.append(f"Failed to verify PDF header: {e}")
+        elif fmt == "xlsx":
+            try:
+                import openpyxl
+                wb = openpyxl.load_workbook(str(target), read_only=True)
+                if not wb.sheetnames:
+                    discrepancies.append("XLSX file was created but has no sheets.")
+                wb.close()
+            except Exception as e:
+                discrepancies.append(f"Failed to parse created XLSX file: {e}")
 
         if discrepancies:
             return VerificationReport(
@@ -297,5 +519,5 @@ class DocumentTool(BaseTool):
 
         return VerificationReport(
             verified=True,
-            details=f"Document successfully verified on disk ({file_size} bytes at '{target.name}').",
+            details=f"Document successfully verified on disk ({file_size} bytes, format '{fmt}' at '{target.name}').",
         )

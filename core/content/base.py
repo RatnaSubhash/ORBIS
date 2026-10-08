@@ -42,9 +42,9 @@ class GeneratedContent(BaseModel):
     """Structured representation of generated content before persistence."""
     title: str = Field(..., description="Heading or title for the generated document.")
     content: str = Field(..., description="The generated Markdown or plain text body.")
-    format: Literal["markdown", "text"] = Field(
+    format: Literal["markdown", "text", "docx", "pptx", "pdf", "xlsx"] = Field(
         default="markdown",
-        description="Document format ('markdown' or 'text').",
+        description="Document format ('markdown', 'text', 'docx', 'pptx', 'pdf', 'xlsx').",
     )
     topic: str = Field(..., description="Primary topic of the document.")
     char_count: int = Field(..., ge=0, description="Total characters in content.")

@@ -1,0 +1,458 @@
+=== ORBIS_Detailed_Master_Checkpoint_260916_121756 (1).pdf (5 pages) ===
+
+--- PAGE 1 ---
+ORBIS — Detailed Master Project Checkpoint
+ React Bits component decisions + complete capability inventory + implementation status + future scope
+Purpose of this checkpoint
+This document consolidates the ORBIS decisions discussed so far, including the approximately 15 React Bits components that were
+considered as the intended visual foundation and the expanded computer-assistance functionality discussed for the project. It separates
+what is genuinely implemented from what is planned, hardware-dependent, or not universally guaranteeable.
+Important status rule: “Completed” means the capability exists in the current ORBIS backend/system at a meaningful working level.
+“Foundation complete” means the underlying architecture exists but the user-facing capability is still to be built. “Future” means it belongs
+to a later phase. “Limited” means it works only within explicit technical/security boundaries.
+1. React Bits — ORBIS Visual Component Set
+The following five were explicitly locked as core visual decisions. The remaining items were strong candidates/near-confirmed
+components discussed for the ORBIS interface and are included here so the design checkpoint does not lose those decisions.
+#
+Component
+Intended ORBIS location
+Purpose / functionality
+Status
+1
+Globe
+Home / ORBIS Core
+Living central 3D globe. Continuously rotates and reacts to actual ORBIS states: listening,
+reasoning, researching, executing, speaking, approval and completion.
+LOCKED / CORE
+2
+DecryptedText
+Startup / Awakening
+ORBIT/ORBIS identity reveal when the system opens or awakens.
+LOCKED / CORE
+3
+SplitText
+Conversation layer
+Animated user↔ORBIS messages and spoken-response presentation. Selective use to
+keep the interface clean.
+LOCKED / CORE
+4
+LogoLoop
+Live Flow / Research
+Scrolling ecosystem/research activity visualization driven by real backend events rather
+than fake progress.
+LOCKED / CORE
+5
+OptionWheel
+Primary navigation
+Curved interactive navigation signature. Replaces the ordinary three-line hamburger on
+the main ORBIS experience.
+LOCKED / CORE
+6
+Specter Orb
+Ambient ORBIS state /
+interaction
+Candidate for a secondary reactive orb/state visual, if it fits without competing with the
+main globe.
+NEAR-CONFIRM
+ED
+7
+Agentic Ball
+Agent activity / state
+Candidate visual for agent activity or an alternate compact state indicator.
+NEAR-CONFIRM
+ED
+8
+TextType
+Conversation / status
+Candidate typing-style text treatment for concise dynamic ORBIS status or response
+areas.
+NEAR-CONFIRM
+ED
+9
+Folder
+Files / workspace
+Candidate visual interaction for workspace files/projects and continuity resources.
+NEAR-CONFIRM
+ED
+10
+ElasticSlider
+Controls / settings
+Candidate for smooth adjustable settings such as volume, brightness or similar numeric
+controls in later desktop-control UI.
+NEAR-CONFIRM
+ED
+11
+AnimatedList
+Activity / history
+Candidate for task history, event lists, research sources or recent workspace activity.
+NEAR-CONFIRM
+ED
+12
+Dock
+Contextual tools
+Candidate compact access bar for frequently used ORBIS workspaces/tools; should
+remain contextual rather than cluttering Home.
+NEAR-CONFIRM
+ED
+13
+Stepper
+Task / workflow view
+Candidate for multi-step task progress where a workflow needs explicit stage
+representation.
+NEAR-CONFIRM
+ED
+14
+Fluid Glass
+Contextual panels
+Candidate for premium glassmorphism panels/overlays. Heavy 3D dependencies mean it
+should be used selectively.
+NEAR-CONFIRM
+ED
+15
+Tilted Card
+Cards / contextual information
+Candidate for lightweight visual cards such as project/context/source summaries, only
+where it supports the cinematic design.
+NEAR-CONFIRM
+ED
+Selection philosophy: these components are not intended to make ORBIS look like a collection of unrelated effects. The Globe remains
+the dominant identity; DecryptedText handles awakening; SplitText handles conversation; LogoLoop supports real Live Flow/research
+activity; OptionWheel handles navigation. The additional components should only appear where their interaction is genuinely useful.
+2. ORBIS Visual Direction — Locked
+Dark  minimal  cinematic  futuristic  restrained JARVIS inspiration. The Home screen is intentionally sparse, with the globe as the
+focus. Workspaces and panels appear contextually. The design should avoid a generic SaaS dashboard and avoid an overloaded
+cyberpunk/RGB gaming aesthetic.
+
+
+--- PAGE 2 ---
+3. Complete Capability Inventory — 50 Items
+#
+Capability
+Status
+Current / planned behavior
+1
+Natural-language Q&A;
+COMPLETED
+Answer ordinary questions through the ORBIS agent/LLM pipeline.
+2
+Conversational explanations
+COMPLETED
+Explain technical concepts and adapt responses to the current conversation.
+3
+Multi-step task planning
+COMPLETED
+Hierarchical/DAG planning for tasks involving multiple operations.
+4
+Task execution + verification
+COMPLETED
+Execute tools, verify results and report success/failure.
+5
+Dynamic safety/risk assessment
+COMPLETED
+Risk-aware execution with approval gates for higher-risk operations.
+6
+Human approval / continuation
+COMPLETED
+Pending approval can be resumed, approved, denied or invalidated on context switch.
+7
+Web research
+COMPLETED
+Controlled web research with source discovery/fetching, ambiguity handling and synthesis.
+8
+Multi-source research
+COMPLETED
+Research can gather evidence from multiple sources rather than relying on a single result.
+9
+Terminal automation
+COMPLETED / CONTROLLED
+Allowlisted shell-free execution, workspace boundaries, bounded output and secret redaction.
+10
+File listing
+COMPLETED / CONTROLLED
+Safe workspace listing with protected entries filtered.
+11
+File reading
+COMPLETED / CONTROLLED
+Read supported workspace files while protecting sensitive paths/content.
+12
+File creation
+COMPLETED / CONTROLLED
+Create supported text/Markdown files; overwrite can require approval.
+13
+Document generation
+COMPLETED / LIMITED
+Markdown/text generation is implemented; richer office formats are future.
+14
+Workspace observation
+COMPLETED / LIMITED
+Passive Windows observation and workspace events; some foreground detection depends on
+environment.
+15
+Session segmentation
+COMPLETED
+Groups workspace activity into sessions.
+16
+Context DNA
+COMPLETED
+Structured representation of task/session context and relationships.
+17
+Workspace Knowledge Graph
+COMPLETED
+NetworkX + SQLite graph representing sessions, files, apps, resources and relationships.
+18
+Semantic vector memory
+COMPLETED
+Sentence Transformers + FAISS semantic retrieval.
+19
+Continuity retrieval
+COMPLETED
+Retrieve context relevant to questions such as what the user was working on.
+20
+Intent Continuity Engine (ICE)
+COMPLETED
+Estimates unfinished work and likely next actions using deterministic/semantic signals.
+21
+Conversation continuity
+COMPLETED
+Bounded multi-turn context, reference resolution, topic switching and artifact tracking.
+22
+Workspace restoration
+COMPLETED / LIMITED
+Declarative multi-app/window restoration with validation, allowlists and approval.
+23
+Voice input
+COMPLETED
+Push-to-talk local speech capture and transcription.
+24
+Voice output
+COMPLETED
+Windows SAPI5 local text-to-speech.
+25
+Live Flow event foundation
+COMPLETED
+Typed AgentEvents, async EventBus, bounded history, replay and sanitization.
+26
+Real-time gateway
+NEXT
+FastAPI WebSocket/SSE bridge for the future desktop UI; Phase 12.8.
+27
+System volume / mute
+FUTURE
+Controlled system tool for volume up/down/mute.
+28
+Brightness control
+FUTURE
+Controlled display brightness up/down where supported by Windows/device APIs.
+29
+Battery Saver
+FUTURE
+Enable/disable supported power-saving settings.
+30
+Wi-Fi control
+FUTURE
+Connect/disconnect and supported Wi-Fi operations through controlled system capabilities.
+31
+Bluetooth control
+FUTURE
+Supported Bluetooth connection/settings operations.
+32
+Broader Windows settings
+FUTURE
+Expose reasonably supported system settings through safe, typed tools rather than
+unrestricted OS access.
+33
+Application launching
+FUTURE
+Open supported applications and desktop resources.
+34
+Open PDFs
+FUTURE / PARTLY
+AVAILABLE
+PDF files can be handled as files today; dedicated desktop opening is a future AppLaunch
+capability.
+35
+Multi-application sequencing
+FUTURE
+Example: open WhatsApp, leave it open, then launch another application/game.
+36
+YouTube search/play
+FUTURE
+Controlled browser/media workflow for search/open/play.
+37
+WhatsApp Web interaction
+FUTURE
+Supported browser/app interaction where technically possible.
+38
+Instagram Web interaction
+FUTURE
+Supported browser/app interaction where technically possible.
+39
+Messaging
+FUTURE / HIGH-SIDE-EFFECT
+Sending messages is possible only through an appropriate authorized capability and
+safety/approval flow.
+40
+Interactive browser automation
+FUTURE
+GUI-level browser tasks separate from current web research.
+41
+DOCX generation/editing
+FUTURE
+Rich Word document workflows.
+42
+PPTX generation/editing
+FUTURE
+Rich presentation generation and modification.
+43
+PDF generation/workflows
+FUTURE
+Rich PDF creation/editing/export workflows.
+44
+XLSX workflows
+FUTURE
+Spreadsheet creation, editing and analysis.
+45
+Live document visualization
+FUTURE
+Show real document/PPT/PDF updates in the UI while a task executes.
+46
+Live research visualization
+FUTURE / FOUNDATION
+Show real research milestones, sources and progress through the event stream.
+
+
+--- PAGE 3 ---
+#
+Capability
+Status
+Current / planned behavior
+47
+Keyboard/RGB control
+FUTURE /
+HARDWARE-DEPENDENT
+Keyboard lighting and related controls where hardware/vendor APIs support them.
+48
+Game download/install
+FUTURE / HIGH-RISK
+Potential controlled installation workflow such as through Epic Games; requires supported
+automation and safety approval.
+49
+Autonomous multi-app workflows
+FUTURE
+Coordinate multiple applications while maintaining task context and safety.
+50
+Live Flow disconnect independence
+FOUNDATION / DESIGN LOCK
+Closing Live Flow will hide the visualization only; it must not stop/cancel the underlying
+ORBIS task.
+
+
+--- PAGE 4 ---
+4. Status Meaning and Important Boundaries
+COMPLETED: the core capability has been implemented and tested at the current intended scope. This does not mean unlimited support
+for every application or operating-system variation.
+COMPLETED / LIMITED: functional but constrained by Windows visibility, supported file formats, application APIs, resource availability
+or other explicit technical boundaries.
+FOUNDATION COMPLETE: the architectural infrastructure exists, but the user-facing capability still needs a gateway/UI or later tool
+implementation.
+FUTURE: intentionally deferred to later ORBIS phases. These should be implemented as controlled tools rather than by bypassing the
+existing safety architecture.
+HIGH-SIDE-EFFECT / HIGH-RISK: actions such as messaging or software installation can cause external changes and therefore require
+stronger authorization and approval handling.
+HARDWARE-DEPENDENT: RGB and vendor-specific hardware controls depend on the actual device, driver and available APIs.
+NOT UNIVERSAL: ORBIS is designed to support authorized digital tasks for which a suitable reliable capability exists. It should not be
+described as having unlimited control over every computer or every application.
+5. What ORBIS Explicitly Will Not Do
+ Expose private chain-of-thought or hidden model reasoning through Live Flow.
+ Expose API keys, passwords, cookies, bearer tokens, .env contents or other protected secrets.
+ Use unrestricted keylogging, password capture or surveillance as a shortcut to workspace continuity.
+ Pretend that an action happened when the underlying tool did not perform it.
+ Use fake Live Flow progress unrelated to actual backend events.
+ Bypass existing safety/approval gates simply because a future capability is requested.
+ Promise perfect restoration of arbitrary application UI state.
+ Promise universal control of hardware or every application.
+6. Architecture for the Expanded Vision
+Brain → Events → Gateway → UI → Capabilities
+The existing ORBIS brain remains the execution authority. The EventBus reports safe operational milestones. Phase 12.8 exposes those
+events through a gateway. Electron/React later visualizes them. New capabilities such as system control, browser automation and
+hardware control are introduced as typed tools behind the existing planner, risk, approval and verification boundaries.
+Example future task: “Open WhatsApp, don't send a message, then start Marvel Rivals.” ORBIS should interpret this as a multi-step
+workflow, use supported application-launch capabilities, preserve context between steps, and keep the no-message constraint explicit. It
+should not infer permission to send a message.
+
+
+--- PAGE 5 ---
+7. Revised ORBIS Roadmap
+Phase
+Scope
+Status
+1
+Foundation, Tool Contract & Minimal Agent Shell
+COMPLETE
+2
+Passive Workspace Observation & Base Desktop Tools
+COMPLETE
+3
+Session Segmentation & Context DNA
+COMPLETE
+4
+Knowledge Graph & Semantic Vector Store
+COMPLETE
+5
+First Continuity Vertical Slice
+COMPLETE
+6
+Multi-Step Agent Brain & Hierarchical Planner
+COMPLETE
+7
+Web Research & Controlled Terminal Automation
+COMPLETE
+8
+Content & Document Generation
+COMPLETE
+9
+Intent Continuity Engine (ICE)
+COMPLETE
+10
+Multi-App & Window Layout Restoration
+COMPLETE
+11
+Local Voice Interface
+COMPLETE
+11.5
+Voice/Q&A; Hardening + Research + Conversation Continuity
+COMPLETE
+12.1–12.7
+Backend Agent Event Architecture
+COMPLETE + COMMITTED
+12.8
+FastAPI Gateway + Real-Time IPC
+NEXT
+12.9+
+Electron/React ORBIS UI + Live Flow
+FUTURE
+13
+System Control, App Launch & Desktop Capabilities
+FUTURE
+14
+Interactive Web Automation & Office Document Workflows
+FUTURE
+15
+Hardware Integrations, Autonomous Multi-App Workflows & Polish
+FUTURE
+8. Current Technical Checkpoint
+Known-good commit: 23bbd281ad1e47401e8487e21b5daa7f05aed71c — “Complete Phase 12 backend event architecture”.
+Verified test state: 397 tests collected, 395 passed, 0 failed, 2 skipped because live Gemini integration tests require GEMINI_API_KEY.
+Phase 12 event tests: 16/16; remediation security: 14/14; capability stabilization: 13/13.
+Phase 12.1–12.7: Event model, EventSanitizer, EventBus, executor/orchestrator integration, tests and documentation are committed.
+Immediate next step: Phase 12.8 FastAPI Gateway + Real-Time IPC. No frontend implementation should begin until this gateway layer
+is reviewed.
+9. Final Project Definition
+ORBIS is a general-purpose, safety-bounded desktop AI agent whose distinguishing capability is workspace continuity and context
+reconstruction. It combines natural-language/voice interaction, controlled digital tools, research, content creation, workspace memory,
+intent continuity and restoration. Its future scope expands into system control, application interaction, browser automation,
+communication, rich documents and hardware integrations where reliable authorized capabilities exist.
+The project should be presented as a real agent platform with continuity intelligence, not merely a desktop assistant and not merely a
+session-restoration utility.
+
+

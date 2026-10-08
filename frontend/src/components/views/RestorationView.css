@@ -1,0 +1,554 @@
+/* ── RestorationView.css — Complete Workspace Restoration Center ── */
+
+.orbis-restoration-workspace {
+  width: 100%;
+  max-width: 1200px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  animation: orbisViewFadeIn 0.3s ease;
+  margin: 0 auto;
+}
+
+.orbis-restoration-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.orbis-restoration-title-group h2 {
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-primary, #ffffff);
+  margin: 0 0 4px 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.orbis-restoration-sub {
+  font-size: 0.8rem;
+  color: var(--text-dim, #71717a);
+}
+
+.orbis-restoration-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* ── Quick Prompt Bar ── */
+.orbis-restoration-prompt-bar {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+  background: rgba(14, 18, 26, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  padding: 6px 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(10px);
+}
+
+.orbis-restoration-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: #ffffff;
+  font-size: 0.88rem;
+  outline: none;
+  font-family: inherit;
+}
+
+.orbis-restoration-input::placeholder {
+  color: #52525b;
+}
+
+/* ── Master/Detail Grid ── */
+.orbis-restoration-grid {
+  display: grid;
+  grid-template-columns: 380px 1fr;
+  gap: 20px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .orbis-restoration-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── Sessions List Column ── */
+.orbis-restoration-sessions-col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.orbis-sessions-col-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted, #a1a1aa);
+  padding: 0 4px;
+}
+
+.orbis-badge-count {
+  background: rgba(51, 204, 221, 0.15);
+  color: #33ccdd;
+  border: 1px solid rgba(51, 204, 221, 0.3);
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 0.72rem;
+}
+
+.orbis-sessions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 600px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.orbis-session-card {
+  background: rgba(14, 18, 26, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  text-align: left;
+}
+
+.orbis-session-card:hover {
+  background: rgba(20, 26, 38, 0.85);
+  border-color: rgba(255, 255, 255, 0.18);
+  transform: translateY(-1px);
+}
+
+.orbis-session-card.selected {
+  background: rgba(18, 28, 44, 0.95);
+  border-color: #33ccdd;
+  box-shadow: 0 0 16px rgba(51, 204, 221, 0.12);
+}
+
+.orbis-session-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.orbis-session-time {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #e4e4e7;
+}
+
+.orbis-session-project {
+  font-size: 0.7rem;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 1px 7px;
+  border-radius: 4px;
+  color: #38bdf8;
+}
+
+.orbis-session-apps-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.orbis-app-pill {
+  font-size: 0.72rem;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 2px 7px;
+  border-radius: 4px;
+  color: #d4d4d8;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.orbis-app-pill.supported {
+  border-color: rgba(51, 204, 221, 0.25);
+  color: #a5f3fc;
+}
+
+.orbis-session-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.72rem;
+  color: #71717a;
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  padding-top: 6px;
+  margin-top: 2px;
+}
+
+/* ── Plan & Execution Console Column ── */
+.orbis-restoration-plan-col {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.orbis-plan-meta-card {
+  background: rgba(14, 18, 26, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.orbis-plan-meta-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.orbis-plan-goal {
+  font-size: 0.96rem;
+  font-weight: 600;
+  color: #ffffff;
+  margin: 0;
+}
+
+.orbis-plan-badges {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.orbis-status-badge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 3px 8px;
+  border-radius: 4px;
+  text-transform: uppercase;
+}
+
+.orbis-status-badge.valid {
+  background: rgba(34, 197, 94, 0.15);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  color: #4ade80;
+}
+
+.orbis-status-badge.warning {
+  background: rgba(234, 179, 8, 0.15);
+  border: 1px solid rgba(234, 179, 8, 0.35);
+  color: #facc15;
+}
+
+.orbis-status-badge.risk-low {
+  background: rgba(51, 204, 221, 0.15);
+  border: 1px solid rgba(51, 204, 221, 0.3);
+  color: #33ccdd;
+}
+
+.orbis-status-badge.risk-medium {
+  background: rgba(249, 115, 22, 0.15);
+  border: 1px solid rgba(249, 115, 22, 0.3);
+  color: #fb923c;
+}
+
+.orbis-status-badge.approval {
+  background: rgba(168, 85, 247, 0.15);
+  border: 1px solid rgba(168, 85, 247, 0.3);
+  color: #c084fc;
+}
+
+/* ── Steps Sequence ── */
+.orbis-steps-container {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.orbis-step-card {
+  background: rgba(12, 16, 24, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  padding: 12px 16px;
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  transition: all 0.2s ease;
+}
+
+.orbis-step-card.active-executing {
+  border-color: #33ccdd;
+  background: rgba(18, 28, 44, 0.85);
+  box-shadow: 0 0 14px rgba(51, 204, 221, 0.15);
+}
+
+.orbis-step-card.skipped {
+  opacity: 0.55;
+}
+
+.orbis-step-checkbox {
+  margin-top: 3px;
+  cursor: pointer;
+  accent-color: #33ccdd;
+  width: 16px;
+  height: 16px;
+}
+
+.orbis-step-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.orbis-step-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.orbis-step-app-name {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.orbis-step-app-exe {
+  font-size: 0.72rem;
+  color: #71717a;
+  font-family: monospace;
+}
+
+.orbis-step-target-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: #a1a1aa;
+}
+
+.orbis-target-badge {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 0.7rem;
+  color: #38bdf8;
+  font-family: monospace;
+}
+
+.orbis-step-bounds-row {
+  font-size: 0.72rem;
+  color: #71717a;
+  font-family: monospace;
+}
+
+.orbis-step-error-msg {
+  font-size: 0.75rem;
+  color: #f87171;
+  background: rgba(239, 68, 68, 0.1);
+  padding: 4px 8px;
+  border-radius: 4px;
+  border-left: 2px solid #ef4444;
+}
+
+/* ── Actions Row ── */
+.orbis-restoration-actions-bar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding-top: 8px;
+}
+
+.orbis-restoration-btn {
+  padding: 10px 22px;
+  border-radius: 8px;
+  font-size: 0.86rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+}
+
+.orbis-restoration-btn.primary {
+  background: linear-gradient(135deg, #33ccdd, #0284c7);
+  color: #000000;
+  font-weight: 700;
+  box-shadow: 0 4px 18px rgba(51, 204, 221, 0.3);
+}
+
+.orbis-restoration-btn.primary:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 24px rgba(51, 204, 221, 0.45);
+}
+
+.orbis-restoration-btn.secondary {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #e4e4e7;
+}
+
+.orbis-restoration-btn.secondary:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.orbis-restoration-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none !important;
+}
+
+/* ── Result & Verification Banner ── */
+.orbis-restoration-result-card {
+  background: rgba(14, 22, 34, 0.9);
+  border: 1px solid rgba(51, 204, 221, 0.3);
+  border-radius: 10px;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  animation: orbisViewFadeIn 0.3s ease;
+}
+
+.orbis-restoration-result-card.success {
+  border-color: rgba(34, 197, 94, 0.4);
+  background: rgba(12, 28, 20, 0.85);
+}
+
+.orbis-result-summary-text {
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: #ffffff;
+}
+
+.orbis-verification-items {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.78rem;
+  color: #a1a1aa;
+}
+
+.orbis-verif-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ── Unified Workspace Controls & Tabs ── */
+.orbis-workspace-prompt-bar {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+  background: rgba(14, 18, 26, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  padding: 6px 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.orbis-workspace-prompt-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: #ffffff;
+  font-size: 0.86rem;
+  outline: none;
+  font-family: inherit;
+}
+
+.orbis-workspace-prompt-input::placeholder {
+  color: #52525b;
+}
+
+.orbis-workspace-tabs {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.orbis-workspace-tab-btn {
+  padding: 4px 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.orbis-workspace-tab-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+}
+
+.orbis-workspace-tab-btn.active {
+  background: rgba(51, 204, 221, 0.12);
+  border-color: rgba(51, 204, 221, 0.4);
+  color: var(--accent);
+}
+
+.orbis-resume-btn {
+  padding: 4px 12px;
+  background: linear-gradient(135deg, rgba(51, 204, 221, 0.2), rgba(2, 132, 199, 0.25));
+  border: 1px solid rgba(51, 204, 221, 0.4);
+  color: #38bdf8;
+  border-radius: 6px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.orbis-resume-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, rgba(51, 204, 221, 0.35), rgba(2, 132, 199, 0.4));
+  border-color: var(--accent);
+  box-shadow: 0 0 12px rgba(51, 204, 221, 0.25);
+}
+
+.orbis-resume-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.orbis-restoration-console {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+

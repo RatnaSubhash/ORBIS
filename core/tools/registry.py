@@ -79,11 +79,16 @@ def create_default_tool_registry(
     content_generator: Optional[Any] = None,
     tts_provider: Optional[Any] = None,
     llm_provider: Optional[Any] = None,
+    mock_app_launcher: Optional[Any] = None,
+    mock_network_backend: Optional[Any] = None,
+    mock_messaging_backend: Optional[Any] = None,
+    mock_hardware_backend: Optional[Any] = None,
 ) -> ToolRegistry:
     """
     Constructs an authoritative, fully populated ToolRegistry containing all
     implemented Phase 1 through Phase 12 tools with their standard configurations.
-    Ensures WebResearchTool, SystemUtilityTool, and KnowledgeTool are registered across all agent pipelines.
+    Ensures WebResearchTool, SystemUtilityTool, KnowledgeTool, and extended system control tools
+    are registered across all agent pipelines.
     """
     from core.tools.echo_tool import EchoTool
     from core.tools.file_tool import FileTool
@@ -98,6 +103,10 @@ def create_default_tool_registry(
     from core.tools.system_tool import SystemUtilityTool
     from core.tools.knowledge_tool import KnowledgeTool
     from core.tools.system_control_tool import SystemControlTool
+    from core.tools.app_launch_tool import AppLaunchTool
+    from core.tools.network_control_tool import NetworkControlTool
+    from core.tools.messaging_tool import MessagingTool
+    from core.tools.hardware_control_tool import HardwareControlTool
 
     if llm_provider is None:
         try:
@@ -113,6 +122,15 @@ def create_default_tool_registry(
     registry.register(SystemUtilityTool())
     registry.register(SystemControlTool())
     registry.register(KnowledgeTool(llm_provider=llm_provider))
+    registry.register(
+        AppLaunchTool(
+            launcher=mock_app_launcher,
+            allowed_workspace_root=allowed_workspace_root,
+        )
+    )
+    registry.register(NetworkControlTool(backend=mock_network_backend))
+    registry.register(MessagingTool(dispatcher=mock_messaging_backend))
+    registry.register(HardwareControlTool(rgb_controller=mock_hardware_backend))
 
     if db is not None:
         registry.register(ContinuityTool(db=db))
@@ -143,3 +161,4 @@ def create_default_tool_registry(
         registry.register(VoiceTool(tts_provider=tts_provider))
 
     return registry
+

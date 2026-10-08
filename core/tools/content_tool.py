@@ -25,9 +25,9 @@ class ContentGeneratorParameters(BaseModel):
         default="report",
         description="The structure of the generated document.",
     )
-    format: Literal["markdown", "text"] = Field(
+    format: Literal["markdown", "text", "docx", "pptx", "pdf", "xlsx"] = Field(
         default="markdown",
-        description="The document markup format ('markdown' or 'text').",
+        description="The document markup format ('markdown', 'text', 'docx', 'pptx', 'pdf', 'xlsx').",
     )
     context_data: Optional[str] = Field(
         default=None,

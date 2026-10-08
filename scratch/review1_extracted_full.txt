@@ -1,0 +1,708 @@
+=== PARAGRAPHS AND TABLES FROM REVIEW 1 DOCX ===
+
+[Normal] SCHOOL OF COMPUTER SCIENCE ENGINEERING AND INFORMATION SYSTEMS
+BITE308L: ARTIFICIAL INTELLIGENCE
+
+[Subtitle] Fall Semester 2026–27
+
+[Normal] REVIEW–1 PROJECT DOCUMENT
+ORBIS: An Intelligent Context Reconstruction Engine for Adaptive Workspace Continuity
+Project Domain: Artificial Intelligence • Desktop Automation • Natural Language Processing • Context-Aware Computing
+
+[Subtitle] Shrinickesh (24BIT0427) •Naguleshwaran (24BIT0482) • K. Ratna Subhash (24BIT0489)
+
+[Heading 1] ABSTRACT
+
+[Normal] Modern desktop operating systems provide search utilities, recent-file lists, application launchers and voice assistants; however, these facilities generally operate at the level of isolated commands or individual resources. They rarely maintain a structured understanding of what a user was actually trying to accomplish across several applications, documents, browser resources and intermediate actions. Consequently, after a shutdown, crash, interruption or task switch, users must manually reconstruct their working state by reopening applications, finding relevant documents, recovering browser resources and remembering the unfinished objective. This repeated reconstruction introduces avoidable cognitive and temporal overhead.
+
+[Normal] ORBIS is proposed as a privacy-preserving AI workspace continuity system that addresses this problem through a Context Reconstruction Engine (CRE). Instead of representing a session as a list of files, ORBIS models a work session as Context DNA containing user intent, active applications, relevant files, browser resources, temporal information and semantic relationships. These Context DNA records are connected through a Workspace Knowledge Graph so that resources can be retrieved not only by exact keywords but also through their semantic and relational proximity to a task. A semantic retrieval layer uses embeddings and vector similarity search, while a hybrid ranking strategy incorporates recency, project association and graph relationships.
+
+[Normal] An Intent Continuity Engine (ICE) extends the system from retrospective retrieval to proactive assistance. Given a reconstructed session, ICE estimates likely next activities and presents ranked recommendations for the user. Where restoration is requested, a controlled automation layer can reopen permitted applications and resources, subject to availability checks, privacy policies and human approval for consequential operations. Voice and natural-language interaction provide an accessible interface, while local-first processing using components such as SQLite, FAISS, Sentence Transformers, Whisper and Ollama is intended to minimize unnecessary transmission of personal workspace data.
+
+[Normal] The research contribution is therefore not the invention of an individual embedding model, database or language model. The contribution lies in the system-level integration of context reconstruction, graph-based workspace memory, semantic retrieval, intent continuity and privacy-preserving restoration, together with a purpose-built evaluation framework for interrupted-workspace recovery.
+
+[Normal] Keywords—Context-aware computing; semantic search; workspace memory; desktop assistant; natural language processing; knowledge graph; intent prediction; desktop automation; privacy-preserving AI.
+
+[Heading 1] I. INTRODUCTION AND PROBLEM STATEMENT
+
+[Normal] Contemporary knowledge work is inherently multi-application. A single task may involve an IDE, terminal, browser, PDF viewer, spreadsheet, presentation software, file manager, notes and communication tools. The user therefore creates a distributed workspace state in which the meaning of one resource often depends on several other resources. A source-code file may be related to a debugging page, a terminal log, a design document and a project folder. A filename-based search system can retrieve the file but cannot reliably reconstruct the task-level context in which it was being used.
+
+[Normal] Existing mechanisms also provide incomplete continuity. Recent-file lists remember individual artifacts, browser history remembers visited pages, and application session restoration may reopen windows. However, these mechanisms are fragmented and generally do not answer the higher-level question: 'What was I doing, what resources were related to it, and what should I resume next?' The gap becomes more pronounced when the user works across application boundaries or when an interruption occurs before the task is completed.
+
+[Normal] Problem formulation:
+
+[List Bullet] How can heterogeneous workspace observations be converted into a unified representation of user task context?
+
+[List Bullet] How can a system retrieve relevant prior context when the user describes an unfinished task semantically rather than by exact filenames?
+
+[List Bullet] How can relationships among applications, files, browser resources, projects and sessions be represented so that retrieval is context-sensitive?
+
+[List Bullet] How can the system infer a likely next activity without making overconfident assumptions about user intent?
+
+[List Bullet] How can an interrupted workspace be restored automatically while respecting user privacy, permissions and application-state uncertainty?
+
+[List Bullet] How can the effectiveness of workspace continuity be evaluated using objective retrieval, reconstruction, prediction, latency and user-effort metrics?
+
+[Normal] Let a workspace session be S = {A, F, B, E, I, R}, where A is the set of applications, F the set of files/documents, B browser resources, E interaction/event information, I the inferred user intent and R the relationships among these entities. ORBIS constructs a structured representation C(S), called Context DNA, and attempts to retrieve or reconstruct the most relevant session S* given a query q or interruption event. The target is to maximize contextual relevance and restoration completeness subject to privacy, safety and latency constraints.
+
+[Heading 1] II. MOTIVATION
+
+[Normal] The motivation is rooted in the long-standing idea that computers should augment human memory and problem solving. Bush's Memex envisioned associative access to accumulated information; Licklider proposed man-computer symbiosis; Engelbart developed the concept of augmenting human intellect. These ideas are particularly relevant to modern desktop work because today's users generate much richer digital traces than the systems that inspired those visions. [1 - 3]
+
+[Normal] At the same time, interruptions are a practical productivity problem. Users frequently suspend a task for meetings, messages, system updates, unrelated questions or device shutdowns. After the interruption, the cost is not merely reopening a window: the user must reconstruct the mental and digital state of the task. Research on interruption has shown that interrupted work can involve increased stress, frustration and effort, which motivates tools that preserve actionable context. [8][9]
+
+[Normal] AI provides an opportunity to move beyond passive storage. Semantic embeddings allow the system to match a natural-language description to related resources; knowledge graphs provide explicit relationships; language models can summarize and interpret context; and controlled automation can turn a retrieved context into a restored workspace. The central motivation of ORBIS is to combine these capabilities around continuity rather than around generic chat or isolated command execution. [10 - 20]
+
+[Heading 2] 2.1 Practical motivation
+
+[List Bullet] Reduce time spent reopening applications and rediscovering task resources.
+
+[List Bullet] Reduce cognitive load caused by reconstructing unfinished work from memory.
+
+[List Bullet] Enable semantic queries such as 'restore the work I was doing on the routing project yesterday'.
+
+[List Bullet] Preserve relationships between resources rather than storing isolated search results.
+
+[List Bullet] Support proactive but explainable recommendations for the next likely action.
+
+[List Bullet] Keep sensitive workspace information local by default.
+
+[List Bullet] Provide an academically measurable problem with clear baselines and ablation experiments.
+
+[Heading 1] III. LITERATURE SURVEY
+
+[Normal] The literature relevant to ORBIS can be organized into six themes: personal information management and digital memory; context-aware computing; semantic language representation and retrieval; knowledge graphs; agent memory and tool use; and computer-use/desktop automation with safety. This organization is intentionally broader than a simple list of AI models because ORBIS is a systems problem that combines HCI, information retrieval, representation learning and automation.
+
+[Heading 2] 3.1 Personal information management and digital memory
+
+[Normal] Bush (1945) introduced the Memex as a conceptual system for associative information storage and retrieval. Licklider (1960) and Engelbart (1962) extended the broader vision of computers as partners in human intellectual work. MyLifeBits (Gemmell et al., 2002; 2006) demonstrated a practical personal digital archive and explored search and organization of large quantities of personal information. Stuff I've Seen (Dumais et al., 2003) addressed retrieval of information previously encountered across multiple sources. These works establish that personal digital memory is valuable, but they primarily focus on remembering and retrieving information. ORBIS extends the problem toward reconstructing a task-oriented workspace and restoring the operational state surrounding that information. [1 - 3][6][7]
+
+[Heading 2] 3.2 Context-aware computing and interruptions
+
+[Normal] Dey, Abowd and Salber developed a conceptual framework for context-aware applications, while the Context Toolkit provided reusable mechanisms for acquiring and distributing context. This literature demonstrates that context should be represented explicitly rather than inferred independently by each application. Interruption studies by Czerwinski et al. and Mark et al. demonstrate that relevance, timing and task switching influence productivity and stress. ORBIS treats desktop state itself as context and introduces a session-level representation that combines temporal, semantic and relational signals. [4][5][8][9]
+
+[Heading 2] 3.3 Semantic representations and retrieval
+
+[Normal] Word2Vec and Paragraph Vector demonstrated distributed representations for words and documents. Transformer-based representations, especially BERT, improved contextual language understanding. Sentence-BERT made semantic similarity practical by generating embeddings that can be compared efficiently. Dense Passage Retrieval, ColBERT and BEIR demonstrate the importance of semantic retrieval and strong evaluation methodology. ORBIS applies these ideas to a private heterogeneous corpus containing files, applications, browser resources and session summaries rather than public passages alone. [10 - 14][18 - 20]
+
+[Heading 2] 3.4 Vector search and knowledge graphs
+
+[Normal] FAISS and approximate nearest-neighbor methods such as HNSW enable efficient vector retrieval at scale. Knowledge-graph research provides mechanisms for representing entities and relationships, while TransE, DeepWalk and node2vec demonstrate graph representation learning. ORBIS combines vector retrieval with an explicit Workspace Knowledge Graph because semantic similarity alone cannot always capture relationships such as 'these two files were used in the same debugging session' or 'this browser resource supported this project'. [15][16][21 - 25]
+
+[Heading 2] 3.5 Agent memory, reasoning and tool use
+
+[Normal] ReAct interleaves reasoning and action, Toolformer studies tool invocation, Reflexion introduces feedback through verbal self-critique, and Generative Agents demonstrate retrieval and reflection over stored memories. MemGPT explores hierarchical memory management for long contexts. These systems suggest that persistent memory and tool access can substantially extend language-model capabilities. ORBIS borrows the architectural principle of persistent memory but specializes it for local desktop workspace continuity. [27 - 32]
+
+[Heading 2] 3.6 GUI agents, desktop automation and safety
+
+[Normal] WebArena, Mind2Web, VisualWebArena and WebVoyager demonstrate increasingly realistic browser-agent evaluation. OSWorld, Windows Agent Arena and related computer-use benchmarks expose the difficulty of reliable long-horizon desktop interaction. CogAgent, AppAgent and UFO explore GUI grounding on desktop or mobile surfaces. RPA research highlights brittleness under interface change, while work on indirect prompt injection shows that content an agent reads can influence later actions. ORBIS therefore treats automation as a controlled downstream capability rather than the sole definition of intelligence, with explicit policy checks and human approval for consequential actions. [33 - 40]
+
+[Heading 1] III-A. COMPARATIVE LITERATURE SURVEY TABLE
+
+[Normal] The reference batch report uses an 18-work survey table with the columns method, dataset/environment, results and drawbacks. ORBIS expands this to 40 studies and keeps the same comparison logic, while adding the reference number required for the Review-1 submission.
+
+
+--- TABLE (41 rows x 6 cols) ---
+Row 0: Ref. | Author / Year | Method | Dataset / Evidence | Results Analysis | Drawbacks / Observations
+Row 1: R01 | Bush, 1945 | Memex / associative information storage | Conceptual proposal | Established the vision of searchable personal knowledge and associative links. | Conceptual; no computational implementation.
+Row 2: R02 | Licklider, 1960 | Man-computer symbiosis | Conceptual framework | Argued that computers should augment human reasoning and intellectual work. | Conceptual; predates modern AI.
+Row 3: R03 | Engelbart, 1962 | Human-intellect augmentation | Conceptual/system design | Proposed integrated tools for augmenting complex problem solving. | Broad framework rather than a specific learned system.
+Row 4: R04 | Salber et al., 1999 | Context Toolkit | Context-aware applications | Provided reusable abstractions for context acquisition and distribution. | Does not model modern semantic workspace memory.
+Row 5: R05 | Dey et al., 2001 | Context-aware framework | Application prototyping scenarios | Formalized context and supported rapid context-aware application development. | General context framework; not task reconstruction.
+Row 6: R06 | Gemmell et al., 2002 | MyLifeBits | Personal digital archive | Demonstrated large-scale capture, indexing and retrieval of personal information. | Archive-centric; limited intent continuity.
+Row 7: R07 | Dumais et al., 2003 | Stuff I've Seen | Email, web, documents, appointments | Unified previously seen information for personal retrieval and reuse. | Resource-centric rather than workspace-state reconstruction.
+Row 8: R08 | Czerwinski et al., 2000 | Interruption relevance/timing | Desktop messaging tasks | Showed that relevance and timing affect interruption effects. | Focuses on notifications, not restoration.
+Row 9: R09 | Mark et al., 2008 | Interrupted work study | Field observation of knowledge workers | Found speed gains can coexist with higher stress and effort after interruption. | Empirical HCI study; no AI continuity mechanism.
+Row 10: R10 | Mikolov et al., 2013 | Word2Vec | Large text corpora | Efficient dense word representations with useful semantic properties. | Word-level; weak session/task representation.
+Row 11: R11 | Le & Mikolov, 2014 | Paragraph Vector | Text classification/sentiment datasets | Learned distributed representations for sentences/documents. | Older representation than contextual encoders.
+Row 12: R12 | Vaswani et al., 2017 | Transformer self-attention | Machine translation benchmarks | Established highly effective attention-based sequence modeling. | General architecture; resource cost can be high.
+Row 13: R13 | Devlin et al., 2019 | BERT | BooksCorpus + Wikipedia; NLP benchmarks | Strong contextual representations across multiple language tasks. | General NLP model; not private workspace-specific.
+Row 14: R14 | Reimers & Gurevych, 2019 | Sentence-BERT | Semantic textual similarity / transfer datasets | Efficient sentence embeddings for similarity search. | Domain mismatch can affect retrieval quality.
+Row 15: R15 | Johnson et al., 2019 | FAISS vector search | Large-scale vector collections | Efficient similarity search for large embeddings. | Retrieval index alone does not model task context.
+Row 16: R16 | Malkov & Yashunin, 2020 | HNSW ANN search | High-dimensional vector search | Efficient approximate nearest-neighbor retrieval. | Index tuning and memory overhead remain concerns.
+Row 17: R17 | Lewis et al., 2020 | Retrieval-Augmented Generation | Knowledge-intensive NLP benchmarks | Retrieved evidence improves grounding of generation. | Quality depends on retrieval and corpus control.
+Row 18: R18 | Karpukhin et al., 2020 | Dense Passage Retrieval | Open-domain QA datasets | Dense retrieval improved passage recall over strong lexical baselines. | Passage-centric; not heterogeneous desktop data.
+Row 19: R19 | Khattab & Zaharia, 2020 | ColBERT late interaction | Passage retrieval benchmarks | Strong retrieval with efficient late interaction. | More computation than simple embedding search.
+Row 20: R20 | Thakur et al., 2021 | BEIR retrieval benchmark | 18 heterogeneous public datasets | Demonstrated that retrieval performance varies strongly across domains and models. | Public corpora do not represent personal workspace continuity.
+Row 21: R21 | Hogan et al., 2021 | Knowledge-graph survey | Research literature | Systematized graph construction, query, embeddings and applications. | Survey rather than a workspace implementation.
+Row 22: R22 | Bordes et al., 2013 | TransE | Knowledge bases such as Freebase/WordNet | Showed relation embeddings can support link prediction. | Simple translational assumption is limited for complex relations.
+Row 23: R23 | Perozzi et al., 2014 | DeepWalk | BlogCatalog, Flickr, YouTube | Learned useful graph representations from random walks. | Designed for network structure, not desktop sessions.
+Row 24: R24 | Grover & Leskovec, 2016 | node2vec | Real-world network datasets | Flexible graph embeddings through biased random walks. | Does not directly model temporal workspace context.
+Row 25: R25 | Wu et al., 2021 | Graph neural network survey | Graph ML literature | Unified major GNN families and applications. | ORBIS may not need a full GNN in its first version.
+Row 26: R26 | Radford et al., 2023 | Whisper ASR | 680k hours multilingual/multitask audio | Strong robustness and generalization in speech transcription. | Local inference may be compute-intensive.
+Row 27: R27 | Schick et al., 2023 | Toolformer | Tool-use/API datasets | Demonstrated learned API/tool invocation. | Tool use needs policy and safety controls.
+Row 28: R28 | Yao et al., 2023 | ReAct | HotpotQA, FEVER, ALFWorld, WebShop | Improved interactive reasoning/action by interleaving observation and action. | Long-horizon reliability remains imperfect.
+Row 29: R29 | Shinn et al., 2023 | Reflexion | ALFWorld, HotpotQA and coding tasks | Self-reflection improved sequential task performance in reported settings. | Requires useful success/failure feedback.
+Row 30: R30 | Wu et al., 2023 | AutoGen | Multi-agent task scenarios | Flexible multi-agent collaboration for complex tasks. | Coordination overhead can increase latency.
+Row 31: R31 | Park et al., 2023 | Generative Agents | Simulated social environment | Memory, retrieval and reflection generated coherent long-horizon behavior. | Simulation-focused; not real desktop restoration.
+Row 32: R32 | Packer et al., 2023 | MemGPT | Long-context document/conversation tasks | Hierarchical memory allowed management of contexts beyond the active window. | Conversational setting differs from OS workspace state.
+Row 33: R33 | Deng et al., 2023 | Mind2Web | 2,350 tasks, 137 websites | Generalist web-agent benchmark and dataset for real websites. | Browser-only interaction surface.
+Row 34: R34 | Zhou et al., 2023 | WebArena | Realistic self-hosted web environments | Revealed a large gap between agent and human end-to-end success. | Web-focused; not native desktop context.
+Row 35: R35 | Hong et al., 2023 | CogAgent | GUI grounding / multimodal tasks | High-resolution GUI understanding improved element grounding. | Large model cost and not a continuity system.
+Row 36: R36 | Zhang et al., 2023 | AppAgent | Smartphone applications | Self-exploration and documentation reading enabled mobile interaction. | Mobile-only; limited desktop OS control.
+Row 37: R37 | Zhang et al., 2024 | UFO | Windows-native application tasks | Dual-agent application selection and UIA-based action improved Windows interaction. | Tightly coupled to Windows UI Automation.
+Row 38: R38 | Xie et al., 2024 | OSWorld | 369 tasks across Ubuntu, Windows and macOS | Execution-based benchmark exposed difficulty of open-ended computer tasks. | Benchmark sandbox; not persistent personal workspace.
+Row 39: R39 | Bonatti et al., 2024 | Windows Agent Arena | Windows-native task suite | Evaluated multimodal OS agents at scale and showed continuing agent-human gap. | Evaluation-oriented rather than a personal assistant.
+Row 40: R40 | Greshake et al., 2023 | Indirect prompt injection | LLM-integrated applications and attack demonstrations | Showed untrusted content can manipulate subsequent agent behavior. | Security threat rather than a continuity method; directly motivates guardrails.
+--- END TABLE ---
+
+[Heading 1] IV. GAP IDENTIFICATION
+
+
+--- TABLE (11 rows x 3 cols) ---
+Row 0: Gap | Observed limitation | Proposed ORBIS response
+Row 1: G1 – Resource-centric memory | Existing personal retrieval systems can remember files, documents or encountered information, but they do not consistently reconstruct the task-level state connecting those resources. | ORBIS introduces Context DNA as a session-level representation of intent, resources, applications and temporal context.
+Row 2: G2 – Fragmented context | Application history, browser history and file history are usually separate stores. | ORBIS unifies these signals under a Workspace Knowledge Graph.
+Row 3: G3 – Keyword dependence | Traditional search often requires filenames, exact terms or known locations. | ORBIS uses semantic embeddings so users can describe an unfinished task in natural language.
+Row 4: G4 – Weak temporal reasoning | A resource may be relevant in general but irrelevant to the user's most recent task. | ORBIS incorporates timestamps, recency and session continuity into ranking.
+Row 5: G5 – Missing relational retrieval | Vector similarity does not explicitly represent that resources were used together or belong to one project. | The graph layer adds explicit task/project/session relationships.
+Row 6: G6 – Retrieval without restoration | Many systems retrieve information but leave the user to reconstruct the actual working environment. | ORBIS connects retrieval to controlled workspace restoration.
+Row 7: G7 – Prediction without continuity | AI assistants can recommend actions from the current prompt but often lack a persistent representation of the unfinished task. | ICE uses previous Context DNA and recent activity to estimate likely next actions.
+Row 8: G8 – Cloud/privacy trade-off | Workspace information may contain source code, documents, credentials, messages or personal data that users may not want transmitted externally. | ORBIS adopts a local-first architecture and configurable data exclusions.
+Row 9: G9 – Safety of desktop automation | OS-level automation can cause irreversible effects if an agent misinterprets context or malicious content. | ORBIS separates recommendation from execution and uses policy checks plus explicit approval for consequential actions.
+Row 10: G10 – Evaluation gap | Existing benchmarks separately measure retrieval, web agents, mobile agents or computer-use success; they do not directly measure interrupted-workspace reconstruction. | ORBIS proposes a purpose-built Workspace Continuity Dataset with reconstruction-specific metrics.
+--- END TABLE ---
+
+[Heading 1] V. OBJECTIVES
+
+[Normal] 1. To design and implement a Context Reconstruction Engine that transforms heterogeneous desktop observations into structured Context DNA.
+
+[Normal] 2. To construct a Workspace Knowledge Graph representing relationships among sessions, projects, tasks, applications, files and browser resources.
+
+[Normal] 3. To implement semantic retrieval using Sentence Transformers and FAISS for natural-language workspace queries.
+
+[Normal] 4. To develop a hybrid ranking mechanism combining semantic similarity, lexical overlap, temporal recency, project relevance and graph proximity.
+
+[Normal] 5. To develop the Intent Continuity Engine for next-action prediction and context-aware recommendations.
+
+[Normal] 6. To provide natural-language and voice interaction for searching, restoring and querying workspace context.
+
+[Normal] 7. To design a privacy-first local processing architecture using local storage and local inference wherever practical.
+
+[Normal] 8. To implement a controlled desktop restoration layer that validates resources before reopening them.
+
+[Normal] 9. To enforce permission policies and human confirmation for high-impact or irreversible operations.
+
+[Normal] 10. To create a synthetic and consent-based dataset capable of measuring retrieval, reconstruction, prediction, restoration and latency.
+
+[Normal] 11. To compare the complete system with keyword, metadata-only and vector-only baselines.
+
+[Normal] 12. To evaluate the effect of individual components through ablation studies.
+
+[Heading 1] VI. DESIGN METHODOLOGY
+
+[Normal] The design follows a requirements-first, top-down methodology inspired by the reference batch report. The system boundary is first defined from the user's perspective, then use cases are mapped to components, the end-to-end data flow is modelled, and finally the implementation is decomposed into independently testable modules. Unlike the reference system, whose primary flow begins with a hotkey and a spoken command, ORBIS begins with workspace observation and session reconstruction because continuity is the central research problem. [4][5][21][22][25]
+
+[Heading 2] 6.1 Requirement elicitation and use-case modelling
+
+[Normal] Fig. 1. UML use-case model of the ORBIS workspace continuity system
+
+[Normal] The primary actor is the desktop user. Core use cases include capturing workspace context, issuing natural-language queries, searching related resources, restoring a previous workspace, receiving next-action recommendations, approving automation, excluding private data and inspecting context/audit history. The use-case model establishes that the user remains the final authority over what information is observed and what consequential action is executed.
+
+[Heading 2] 6.2 Component mapping
+
+[Normal] The use cases are mapped into five major architectural concerns: interaction, context acquisition, intelligence, memory/knowledge, and action/safety. Each concern is further decomposed into modules with a single primary responsibility. This separation allows the retrieval subsystem to be evaluated independently from automation, and the intent engine to be evaluated independently from the UI.
+
+[Heading 2] 6.3 Workflow modelling
+
+[Normal] The workflow models both continuous observation and on-demand restoration. Context acquisition may run periodically or on relevant workspace changes. When a user asks for restoration, the system identifies candidate sessions, retrieves associated resources, checks their current availability, ranks the restoration plan and executes only approved actions. Feedback from successful or failed restoration is written back into the session store to improve later recommendations.
+
+[Heading 1] VI-A. DETAILED DESIGN METHODOLOGY
+
+[Heading 2] 6.1.1 Workspace observation
+
+[Normal] Collect user-authorized metadata about active applications, window titles, file paths or hashes, browser tabs, recent events, project folders and selected interaction signals. The system should minimize capture by using metadata when sufficient and should support exclusion rules for folders, applications and resource types. [4][5]
+
+[Heading 2] 6.1.2 Session segmentation
+
+[Normal] Group low-level events into coherent work sessions using temporal proximity, application continuity, project association and semantic similarity. A simple initial rule-based segmenter can start a new session after prolonged inactivity or a strong task/context transition. [5][8][9][20]
+
+[Heading 2] 6.1.3 Content and metadata extraction
+
+[Normal] Extract permitted text from documents and source code; derive file type, modification time, project association and content fingerprints. OCR using EasyOCR/OpenCV may process screenshots or image-based content only when explicitly allowed.
+
+[Heading 2] 6.1.4 Intent extraction
+
+[Normal] Use the local NLP/LLM layer to generate a compact intent summary such as 'debug routing simulation and compare packet-loss results'. The summary becomes a searchable semantic representation rather than a raw activity log.
+
+[Heading 2] 6.1.5 Context DNA construction
+
+[Normal] Construct a structured record containing session identity, time interval, inferred intent, applications, resources, entities, temporal features, semantic embeddings, confidence and privacy policy. Context DNA is the primary unit for cross-session retrieval. [4][5][21]
+
+[Heading 2] 6.1.6 Workspace Knowledge Graph construction
+
+[Normal] Create nodes for users, sessions, projects, tasks, files, applications, browser resources and events. Create typed edges such as contains, used_in, opened, related_to, followed_by, modified_during and supports_task. [21 - 25]
+
+[Heading 2] 6.1.7 Semantic indexing
+
+[Normal] Generate embeddings for Context DNA summaries and resource descriptions. Store vectors in FAISS. Maintain metadata pointers to SQLite records so retrieval can return complete context rather than an embedding alone. [14 - 20]
+
+[Heading 2] 6.1.8 Hybrid retrieval and ranking
+
+[Normal] Retrieve top-k semantic candidates, then rerank using lexical overlap, recency, project match, application continuity and graph proximity. A conceptual score is Score = w_s S_semantic + w_r S_recency + w_p S_project + w_g S_graph + w_l S_lexical, with weights tuned on validation data. [14 - 20]
+
+[Heading 2] 6.1.9 Intent Continuity Engine
+
+[Normal] Use recent context, historical session sequences and retrieved relationships to rank possible next activities. Initial implementation should prefer interpretable rules or lightweight classifiers; later experiments may compare sequence models. [28 - 32]
+
+[Heading 2] 6.1.10 Restoration planning
+
+[Normal] Convert the target session into an ordered restoration plan. Check whether each application/resource still exists, whether paths changed, whether browser resources are accessible and whether the action is permitted.
+
+[Heading 2] 6.1.11 Safe execution
+
+[Normal] Execute only allowlisted, reversible or user-approved actions. High-impact actions should trigger an approval gate that displays the planned action and expected consequence before execution. [27][28][30][40]
+
+[Heading 2] 6.1.12 Feedback and audit
+
+[Normal] Store success/failure, unavailable-resource events and user corrections. These records are used for later analysis and can support self-correction without silently changing policy boundaries.
+
+[Heading 1] VII. SYSTEM ARCHITECTURE AND MODULES
+
+[Normal] Fig. 2. Conceptual overview of ORBIS for adaptive workspace continuity.
+
+[Normal] Fig. 3. Layered architecture of the proposed ORBIS intelligent context reconstruction system.
+
+
+--- TABLE (18 rows x 4 cols) ---
+Row 0: ID | Module | Description | Representative technology
+Row 1: M1 | Interaction Layer | Desktop interface, natural-language search, voice input, restore controls, recommendations and explanations. | Electron + React or PySide6
+Row 2: M2 | Observation Manager | Collects authorized application, file, browser and event metadata; applies exclusions and normalizes events. | Python, Windows APIs
+Row 3: M3 | Session Segmentation | Groups events into coherent sessions using time, application continuity and project/task signals. | Python; rules + ML optional
+Row 4: M4 | Context Reconstruction Engine | Builds Context DNA from session evidence and produces intent summaries, entities and confidence. | Python, local NLP/LLM
+Row 5: M5 | Workspace Knowledge Graph | Represents semantic relationships among sessions, projects, tasks and resources. | SQLite-backed graph tables / graph layer
+Row 6: M6 | Embedding Service | Converts context summaries and resource descriptions into dense vectors. | Sentence Transformers
+Row 7: M7 | Vector Retrieval | Performs approximate nearest-neighbor search over Context DNA and resource embeddings. | FAISS
+Row 8: M8 | Hybrid Ranker | Combines semantic, lexical, temporal and graph signals into a final relevance score. | Python
+Row 9: M9 | Intent Continuity Engine | Predicts likely next actions and ranks recommendations from recent and historical context. | Rules/classifier/sequence model
+Row 10: M10 | Voice Module | Transcribes spoken queries and commands for hands-free interaction. | Whisper
+Row 11: M11 | OCR/Vision Module | Extracts selected text/visual information from permitted screenshots and images. | EasyOCR + OpenCV
+Row 12: M12 | Local LLM Layer | Performs natural-language understanding, summarization and explanation without requiring cloud inference by default. | Ollama
+Row 13: M13 | Session Store | Stores session metadata, permissions, audit events, hashes and configuration. | SQLite
+Row 14: M14 | Policy & Privacy Guard | Applies data exclusions, permission checks, action allowlists and confirmation requirements. | Python policy engine
+Row 15: M15 | Desktop Automation | Launches permitted applications, opens resources and performs approved UI operations. | Windows APIs / subprocess / pyautogui or equivalent
+Row 16: M16 | Workspace Restoration | Coordinates retrieval, validation and execution to reconstruct a selected session. | Python orchestration layer
+Row 17: M17 | Audit & Feedback | Records restoration outcomes, user corrections, confidence and errors for evaluation. | SQLite + structured logs
+--- END TABLE ---
+
+[Heading 1] VIII. DATA FLOW AND PROCESSING LOGIC
+
+[Normal] Fig. 4. End-to-end data flow of ORBIS from workspace observation to verified restoration.
+
+
+--- TABLE (15 rows x 5 cols) ---
+Row 0: Step | Stage | Input | Output | Key operation
+Row 1: 1 | Observation | Active app/file/browser/event metadata | Raw event stream | Privacy filter
+Row 2: 2 | Normalization | Raw event stream | Normalized events | Timestamp alignment, hashing, deduplication
+Row 3: 3 | Segmentation | Normalized events | Session candidates | Temporal + application/project continuity
+Row 4: 4 | Extraction | Files/documents/screenshots | Metadata + text/entities | Parsers, OCR, OpenCV
+Row 5: 5 | Context DNA | Session candidates + extracted content | Context DNA records | Intent summary + semantic representation
+Row 6: 6 | Graph update | Context DNA + entity relations | Workspace Knowledge Graph | Typed edges and weights
+Row 7: 7 | Indexing | Context DNA + resource text | FAISS vectors | Sentence embeddings
+Row 8: 8 | Query | Natural-language/voice request | Query embedding + constraints | Whisper + NLP
+Row 9: 9 | Retrieval | Query + vector index | Top-k candidates | Semantic search
+Row 10: 10 | Reranking | Candidates + graph + recency | Ranked context | Hybrid scoring
+Row 11: 11 | ICE | Ranked context + history | Next-action candidates | Intent continuity model
+Row 12: 12 | Restoration | Selected session | Action plan | Availability + policy checks
+Row 13: 13 | Execution | Approved plan | Restored workspace | Desktop automation
+Row 14: 14 | Feedback | Execution result + user correction | Audit/learning record | SQLite
+--- END TABLE ---
+
+[Heading 1] IX. CONTEXT DNA REPRESENTATIONS
+
+[Normal] Context DNA is the principal proposed representation of ORBIS. It is deliberately richer than a vector embedding because embeddings alone cannot express every operational property needed for restoration. A Context DNA record should contain both machine-readable fields and a semantic summary.
+
+
+--- TABLE (11 rows x 3 cols) ---
+Row 0: Field Group | Representative fields | Purpose
+Row 1: Identity | session_id, user_id_hash, project_id, task_id | Uniquely identifies the session without exposing raw identity in benchmark data.
+Row 2: Temporal | start_time, end_time, last_active_time, interruption_time | Supports recency and interruption analysis.
+Row 3: Intent | intent_summary, intent_label, confidence | Represents what the user was attempting to accomplish.
+Row 4: Applications | application names, focus sequence, usage duration | Captures the application-level context.
+Row 5: Files | file identifiers, types, modified times, project association | Captures resources used in the task.
+Row 6: Browser | resource titles, domain, sanitized URL/hash | Captures web resources related to the session.
+Row 7: Relations | graph edge IDs, related sessions, project links | Connects context to the Workspace Knowledge Graph.
+Row 8: Semantics | embedding_id, entity list, keywords | Supports semantic and hybrid retrieval.
+Row 9: State | restoration availability, changed paths, open/closed state | Supports restoration planning.
+Row 10: Privacy | classification, exclusions, processing policy | Controls what can be stored and processed.
+--- END TABLE ---
+
+[Normal] Fig. 5. Conceptual data model linking Context DNA, workspace entities, temporal events and restoration state.
+
+[Heading 1] X. WORKSPACE KNOWLEDGE GRAPH
+
+[Normal] The Workspace Knowledge Graph complements vector retrieval by representing explicit relationships. For example, if a user asks for 'the files I used while debugging the routing project', the system can first retrieve the routing project node, traverse sessions associated with the project, and then identify files and browser resources connected to those sessions. This graph expansion can recover useful context even when individual resource descriptions are not semantically close to the query.
+
+
+--- TABLE (11 rows x 4 cols) ---
+Row 0: Source | Relation | Target | Meaning
+Row 1: User | worked_on | Project | Links a user context to a project.
+Row 2: Project | contains | File | Associates files with a project.
+Row 3: Session | used | Application | Records applications used during a session.
+Row 4: Session | opened | BrowserResource | Links browsing activity to the session.
+Row 5: Session | included | File | Records file participation.
+Row 6: File | related_to | File | Captures semantic/project relationships.
+Row 7: Session | followed_by | Session | Models temporal continuity.
+Row 8: Task | uses | Resource | Links a task to required resources.
+Row 9: Session | interrupted_by | Event | Represents interruption cause.
+Row 10: Session | restorable_as | WorkspaceState | Represents restoration target.
+--- END TABLE ---
+
+[Heading 1] XI. SEMANTIC RETRIEVAL AND HYBRID RANKING
+
+[Normal] ORBIS should not depend on a single retrieval signal. Keyword matching is useful for exact names, embeddings are useful for semantic descriptions, graph traversal is useful for relationships, and recency is useful for temporal relevance. The proposed retrieval pipeline therefore uses a multi-stage approach. [10 - 20]
+
+[List Bullet] Stage A — Candidate generation: encode the natural-language query and retrieve top-k Context DNA/resource embeddings from FAISS.
+
+[List Bullet] Stage B — Lexical augmentation: search exact project names, filenames, domains and salient terms.
+
+[List Bullet] Stage C — Graph expansion: include related sessions, files and projects connected to high-scoring candidates.
+
+[List Bullet] Stage D — Temporal filtering: apply a recency prior when the query contains time expressions or when recent sessions are strongly relevant.
+
+[List Bullet] Stage E — Hybrid reranking: combine semantic similarity, lexical score, graph proximity, project match and recency.
+
+[List Bullet] Stage F — Diversity control: avoid returning ten near-duplicate resources from the same session when multiple independent resources could improve coverage.
+
+[Normal] A possible ranking formulation is: R(d|q) = w_s·Sim(q,d) + w_l·Lex(q,d) + w_g·Graph(q,d) + w_r·Recency(d) + w_p·ProjectMatch(q,d). The weights should be learned or tuned using a validation set rather than presented as universal constants. An ablation study will measure the effect of removing each signal.
+
+[Normal] Fig. 6. Hybrid semantic, lexical, graph and temporal retrieval followed by intent continuity prediction.
+
+[Heading 1] XII. INTENT CONTINUITY ENGINE (ICE)
+
+[Normal] ICE is the component that differentiates ORBIS from a passive search utility. Its task is to estimate what the user is likely to do next based on the reconstructed context. For example, if the last session contained a source-code edit, a debugging log and a browser search for an error message, ICE may rank 'continue debugging', 'reopen the error log' or 'open the relevant documentation' as candidate actions. [28 - 32]
+
+[Heading 2] 12.1 Initial ICE strategy
+
+[List Bullet] Extract the current session intent and unresolved task entities.
+
+[List Bullet] Retrieve similar previous sessions.
+
+[List Bullet] Identify the last completed and last incomplete actions.
+
+[List Bullet] Construct candidate next actions from observed transitions.
+
+[List Bullet] Score candidates using recency, frequency, task similarity and session continuity.
+
+[List Bullet] Return top-k recommendations with confidence and a short explanation.
+
+[Heading 2] 12.2 Advanced ICE strategy
+
+[Normal] If sufficient training data becomes available, the rule-based ranker can be compared with a supervised classifier or sequence model. The research evaluation should focus on whether added model complexity improves Top-1/Top-3 prediction enough to justify additional compute and latency. [28 - 31]
+
+[Heading 1] XIII. WORKSPACE RESTORATION METHOD
+
+[Normal] Fig. 7. ORBIS workspace restoration pipeline with policy validation, human approval and verification.
+
+
+--- TABLE (9 rows x 4 cols) ---
+Row 0: Stage | Name | Purpose | Mechanism
+Row 1: R1 | Session identification | Find the most relevant historical session. | Top-k retrieval + user selection if confidence is low.
+Row 2: R2 | Resource validation | Check whether applications, files and browser resources still exist. | Path checks, process checks, URL availability.
+Row 3: R3 | Plan generation | Construct ordered restoration actions. | Dependency-aware action list.
+Row 4: R4 | Policy validation | Check whether each action is permitted. | Allowlist + privacy + confirmation policy.
+Row 5: R5 | Execution | Launch/reopen approved resources. | Windows automation APIs.
+Row 6: R6 | Verification | Check whether expected resources were restored. | Process/window/resource checks.
+Row 7: R7 | Recovery | Handle failures without silently continuing dangerous actions. | Fresh observation + retry or user intervention.
+Row 8: R8 | Feedback | Store outcome and user corrections. | SQLite audit record.
+--- END TABLE ---
+
+[Heading 1] XIV. PRIVACY, SECURITY AND SAFETY DESIGN
+
+[Normal] Because ORBIS observes personal workspace information and can potentially control the operating system, privacy and safety are architectural requirements rather than optional features. The project therefore adopts a local-first design and separates observation, reasoning and action permissions. [27][37 - 40]
+
+
+--- TABLE (9 rows x 3 cols) ---
+Row 0: Control | Risk addressed | ORBIS mechanism
+Row 1: Data minimization | Collect only signals necessary for the requested functionality. | Exclude folders/apps; prefer metadata over raw content.
+Row 2: Local processing | Keep sensitive workspace data on-device by default. | SQLite, FAISS, local embeddings and local LLM inference.
+Row 3: Access control | Restrict automation capabilities by policy. | Allowlisted applications/actions.
+Row 4: Human approval | Require explicit confirmation for high-impact operations. | Approval modal with action summary.
+Row 5: Prompt-injection resistance | Treat observed content as untrusted data, not as instructions. | Separate data from executable policy; never let file/web text override system policy.
+Row 6: Auditability | Record what was proposed and executed. | Timestamped audit events.
+Row 7: Failure containment | Stop when confidence is low or verification fails. | Retry, ask user, or abort.
+Row 8: Benchmark privacy | Avoid exposing personal data in evaluation artifacts. | Synthetic content, hashing and redaction.
+--- END TABLE ---
+
+[Heading 1] XV. DATASET DESCRIPTION
+
+[Normal] The submitted project form specifies user-authorized local workspace metadata, including documents, source code, browser sessions, application usage logs and file metadata, and states that synthetic datasets will be generated to evaluate Context DNA and workspace reconstruction. fileciteturn6file0L53-L59 To turn that high-level specification into a rigorous Review-1 plan, ORBIS will use two complementary dataset categories: a purpose-built Workspace Continuity Dataset and public benchmark corpora used only for component-level calibration. [20][31 -34][38][39]
+
+[Heading 2] 15.1 ORBIS-WCD: Workspace Continuity Dataset
+
+[Normal] ORBIS-WCD is the proposed project-specific corpus. Each episode represents a work session or interrupted sequence. A record contains the observed context, ground-truth task intent, relevant resources, interruption point and expected restoration state.
+
+
+--- TABLE (13 rows x 3 cols) ---
+Row 0: Field | Description | Evaluation role
+Row 1: Session ID | Unique anonymized identifier | Every episode
+Row 2: Task category | Development, report, research, data analysis, presentation, study, debugging | Scenario classification
+Row 3: Intent statement | Human/synthetic ground-truth description | Intent recognition target
+Row 4: Application sequence | Applications used and order/focus duration | Context reconstruction
+Row 5: File set | Relevant files and project relationships | Resource retrieval/restoration
+Row 6: Browser set | Relevant pages/domains with sanitized identifiers | Web-context recovery
+Row 7: Event sequence | Timestamped context changes | Session segmentation
+Row 8: Interruption | Interruption time/type | Continuity evaluation
+Row 9: Expected restoration | Apps/files/browser resources expected after recovery | Restoration ground truth
+Row 10: Next action | Ground-truth next activity | ICE prediction target
+Row 11: Success label | Binary/graded completion outcome | End-to-end evaluation
+Row 12: Latency | Trigger/request time to first restoration action and completion | Performance evaluation
+--- END TABLE ---
+
+[Heading 2] 15.2 Synthetic scenario design
+
+[Normal] Synthetic scenarios will be generated from controlled task templates to create reproducible ground truth. Representative scenarios include software debugging, literature review, report preparation, data analysis, presentation preparation, network configuration, coding assignments and multi-application research tasks. Each scenario will deliberately include interruptions and context switches so that the restoration problem is measurable.
+
+[Heading 2] 15.3 Proposed corpus size
+
+
+--- TABLE (7 rows x 3 cols) ---
+Row 0: Category | Target | Notes
+Row 1: Pilot real-user episodes | 50–100 | Collected only with consent and sanitized before analysis.
+Row 2: Synthetic training/development episodes | 300–500 | Generated from controlled task templates.
+Row 3: Validation episodes | 100–150 | Held out for retrieval/ICE tuning.
+Row 4: Final test episodes | 150–200 | No tuning on test outcomes.
+Row 5: Cross-task test | At least 30 | Task families not represented in tuning.
+Row 6: Cross-user test | As consent permits | Tests generalization beyond one workspace profile.
+--- END TABLE ---
+
+[Heading 2] 15.4 Public benchmark calibration
+
+
+--- TABLE (5 rows x 4 cols) ---
+Row 0: Dataset | Domain | Scale / characteristic | Use in ORBIS
+Row 1: OSWorld | Real computer environments | 369 tasks across Ubuntu, Windows and macOS | Calibrate cross-application task difficulty and computer-use evaluation.
+Row 2: WebArena | Realistic self-hosted websites | 812 tasks across web domains | Calibrate long-horizon browser interaction.
+Row 3: Mind2Web | Real websites | 2,350 tasks across 137 websites | Calibrate web-action and generalization scenarios.
+Row 4: Android in the Wild | Mobile device control | 715k human demonstration episodes | Background comparison for multimodal device-control research; not direct training data.
+--- END TABLE ---
+
+[Heading 1] XVI. DATASET COLLECTION AND ANNOTATION PROTOCOL
+
+[List Bullet] Define a task template with a known goal, required resources, expected applications and interruption point.
+
+[List Bullet] Run the task on a controlled Windows 11 environment and record only user-authorized metadata.
+
+[List Bullet] Capture a session-level snapshot at the interruption point.
+
+[List Bullet] Create a ground-truth intent statement and expected restoration state.
+
+[List Bullet] Annotate resource relevance as relevant / partially relevant / irrelevant where applicable.
+
+[List Bullet] Record the next intended action for ICE evaluation.
+
+[List Bullet] Redact or hash personally identifying fields before benchmark release.
+
+[List Bullet] Keep raw user workspace data local and separate from any public benchmark artifact.
+
+[List Bullet] Maintain a versioned annotation schema so evaluation remains reproducible.
+
+[Heading 1] XVII. EVALUATION METHODOLOGY
+
+
+--- TABLE (15 rows x 3 cols) ---
+Row 0: Metric | Purpose | Measurement
+Row 1: Intent Recognition Accuracy | Whether the reconstructed intent matches ground truth | Exact/semantic match + human validation
+Row 2: Context Retrieval Recall@K | Whether relevant sessions/resources appear in top-k | Recall@5, Recall@10
+Row 3: MRR | Rank of first relevant result | Mean reciprocal rank
+Row 4: nDCG@K | Quality of ranked relevance ordering | Graded relevance labels
+Row 5: Context Coverage | How much of the target session is recovered | Relevant-resource coverage %
+Row 6: Graph Retrieval Gain | Benefit from graph relationships | Compare vector-only vs vector+graph
+Row 7: Restoration Success Rate | Whether target workspace state is restored | Programmatic checks
+Row 8: Resource Restoration Rate | Fraction of expected resources restored | Restored / expected
+Row 9: ICE Top-1 / Top-3 | Next-action prediction quality | Accuracy / Macro-F1
+Row 10: End-to-End Latency | Time from request to first action/completion | Median and 95th percentile
+Row 11: User Effort | Manual actions remaining after restoration | Step count and user study
+Row 12: Automation Safety | Unsafe operations prevented | Policy-violation rate
+Row 13: Privacy Compliance | Excluded data remaining excluded | Violation count
+Row 14: Resource overhead | CPU, RAM and storage cost | Peak/median measurements
+--- END TABLE ---
+
+[Heading 2] 17.1 Baseline systems
+
+[List Bullet] Baseline B1 — Keyword-only retrieval using filenames, titles and exact terms.
+
+[List Bullet] Baseline B2 — Metadata-only retrieval using file/application/time features.
+
+[List Bullet] Baseline B3 — Semantic vector retrieval using embeddings but without graph information.
+
+[List Bullet] Baseline B4 — Semantic + graph retrieval without Intent Continuity Engine.
+
+[List Bullet] Baseline B5 — Full ORBIS pipeline.
+
+[List Bullet] Optional B6 — Full ORBIS with cloud model inference, used only as a research comparison if privacy constraints permit; not the default architecture.
+
+[Heading 2] 17.2 Ablation experiments
+
+
+--- TABLE (8 rows x 3 cols) ---
+Row 0: Experiment | Change | Question answered
+Row 1: A1 | Remove semantic embeddings | Measures value of semantic retrieval.
+Row 2: A2 | Remove graph | Measures relationship-aware retrieval gain.
+Row 3: A3 | Remove recency | Measures temporal relevance.
+Row 4: A4 | Remove intent summary | Measures task-level representation value.
+Row 5: A5 | Remove ICE | Measures proactive continuity value.
+Row 6: A6 | Remove hybrid reranking | Measures benefit over raw vector similarity.
+Row 7: A7 | Remove restoration verification | Measures effect on successful/safe restoration.
+--- END TABLE ---
+
+[Heading 1] XVIII. EXPECTED RESULTS AND RESEARCH CONTRIBUTIONS
+
+[Normal] Because the system is still at the Review-1 design stage, numerical performance claims should not be presented as achieved results. The expected outcomes are hypotheses to be validated experimentally.
+
+[List Bullet] Semantic retrieval is expected to outperform exact-keyword retrieval for natural-language descriptions of unfinished tasks. [10 - 14][17 - 20]
+
+[List Bullet] Adding graph relationships is expected to improve recall of resources that are connected by task/session relationships but are not lexically similar. [21 - 25]
+
+[List Bullet] Adding temporal and project signals is expected to reduce irrelevant retrieval from older sessions. [9][20]
+
+[List Bullet] Context DNA is expected to provide more complete restoration targets than isolated recent-file or browser-history mechanisms. [1][6][7]
+
+[List Bullet] ICE is expected to provide useful next-action recommendations when a session contains identifiable unresolved work. [28 - 31]
+
+[List Bullet] Hybrid retrieval and local caching are expected to provide a practical latency/quality balance. [14 - 20]
+
+[List Bullet] Policy checks and explicit approval are expected to reduce the risk of unintended high-impact automation. [27][28][37][40]
+
+[Heading 1] XIX. SCOPE, ASSUMPTIONS AND LIMITATIONS
+
+[List Bullet] Initial target platform is Windows 11, matching the submitted project form.
+
+[List Bullet] Only explicitly authorized workspace data is observed.
+
+[List Bullet] Exact restoration of every application-specific UI state is outside the initial scope.
+
+[List Bullet] Applications requiring authentication may not be automatically restorable without user interaction.
+
+[List Bullet] Moving or renaming files can reduce restoration fidelity.
+
+[List Bullet] Local LLM and embedding inference may be limited by available hardware.
+
+[List Bullet] Intent prediction remains probabilistic and should not be treated as certainty.
+
+[List Bullet] The project does not claim that Context DNA, vector search, knowledge graphs or local LLMs are individually novel.
+
+[List Bullet] The novelty claim should focus on the integrated workspace-continuity formulation, context representation, safety architecture and evaluation protocol.
+
+[Heading 1] XX. TECHNOLOGY AND IMPLEMENTATION MAPPING
+
+
+--- TABLE (12 rows x 3 cols) ---
+Row 0: Technology | Layer | Role
+Row 1: Python 3.12 | Core AI and orchestration | Context extraction, retrieval, ICE and automation orchestration.
+Row 2: FastAPI | Local service layer | API boundary between UI and AI services.
+Row 3: Electron + React / PySide6 | Desktop UI | Search, voice, restoration and recommendation interface.
+Row 4: SQLite | Local persistence | Sessions, graph relations, permissions and audit events.
+Row 5: FAISS | Vector index | Fast semantic retrieval.
+Row 6: Sentence Transformers | Embeddings | Context and resource vector representations.
+Row 7: Whisper | Speech recognition | Voice-to-text for natural-language queries.
+Row 8: Ollama | Local LLM execution | Intent extraction, summarization and explanations.
+Row 9: EasyOCR | OCR | Optional text extraction from permitted screenshots/images.
+Row 10: OpenCV | Vision preprocessing | Screenshot/image preprocessing.
+Row 11: Windows APIs / UI automation | Desktop control | Application and window operations with verification.
+--- END TABLE ---
+
+[Heading 1] XXI. PROPOSED IMPLEMENTATION PHASES
+
+
+--- TABLE (9 rows x 3 cols) ---
+Row 0: Phase | Focus | Major deliverables
+Row 1: Phase 1 | Environment + observation | Set up Windows service, repository, SQLite schema and authorized workspace observation.
+Row 2: Phase 2 | Context DNA | Implement session segmentation, metadata extraction and intent summarization.
+Row 3: Phase 3 | Knowledge graph + retrieval | Implement graph tables, embeddings, FAISS indexing and hybrid ranking.
+Row 4: Phase 4 | ICE | Implement baseline next-action recommender and evaluation hooks.
+Row 5: Phase 5 | Restoration | Implement resource validation and safe reopening of supported applications/files/browser resources.
+Row 6: Phase 6 | Voice + UI | Integrate Whisper and desktop interface.
+Row 7: Phase 7 | Safety hardening | Add permissions, confirmation gate, audit logging and failure recovery.
+Row 8: Phase 8 | Evaluation | Collect ORBIS-WCD, run baselines/ablations, analyze metrics and document limitations.
+--- END TABLE ---
+
+[Heading 1] XXII. CONCLUSION AND FUTURE SCOPE
+
+[Normal] ORBIS addresses a specific weakness in current desktop interaction: computers can remember fragments of activity, but they do not consistently reconstruct the task-level context that gives those fragments meaning. The literature demonstrates strong foundations for each component—personal digital memory, context-aware computing, semantic retrieval, graph representations, language-model reasoning, speech recognition and computer-use automation—yet these strands are usually evaluated independently. [1][4][10][21][28][33][38][40]
+
+[Normal] The proposed system closes this integration gap by representing each work session as Context DNA, connecting sessions and resources through a Workspace Knowledge Graph, retrieving context through semantic and hybrid search, predicting next activities through the Intent Continuity Engine, and translating a selected context into a privacy-preserving restoration plan. The system deliberately treats automation as a controlled capability rather than unrestricted autonomy.
+
+[Normal] For Review-1, the project should be presented as a research-backed systems design with a measurable hypothesis: a context-rich, graph-aware and semantically retrievable representation of desktop work can reduce the effort required to resume interrupted tasks. The final implementation and evaluation should determine how much each component contributes, rather than assuming that adding more AI automatically makes the system better—which, as usual, is where engineering reality ruins the marketing slide.
+
+[Heading 1] REFERENCES
+
+[Normal] [1] Bush, V. (1945). As we may think. The Atlantic Monthly, 176(1), 101–108.
+
+[Normal] [2] Licklider, J. C. R. (1960). Man-computer symbiosis. IRE Transactions on Human Factors in Electronics, HFE-1(1), 4–11.
+
+[Normal] [3] Engelbart, D. C. (1962). Augmenting human intellect: A conceptual framework. Stanford Research Institute.
+
+[Normal] [4] Salber, D., Dey, A. K., & Abowd, G. D. (1999). The context toolkit: Aiding the development of context-enabled applications. In Proceedings of the SIGCHI Conference on Human Factors in Computing Systems, 434–441. ACM.
+
+[Normal] [5] Dey, A. K., Abowd, G. D., & Salber, D. (2001). A conceptual framework and a toolkit for supporting the rapid prototyping of context-aware applications. Human–Computer Interaction, 16(2–4), 97–166.
+
+[Normal] [6] Gemmell, J., Bell, G., Lueder, R., Drucker, S., & Wong, C. (2002). MyLifeBits: Fulfilling the Memex vision. In Proceedings of the 10th ACM International Conference on Multimedia, 235–238. ACM.
+
+[Normal] [7] Dumais, S., Cutrell, E., Cadiz, J. J., Jancke, G., Sarin, R., & Robbins, D. C. (2003). Stuff I've seen: A system for personal information retrieval and re-use. In Proceedings of the 26th Annual International ACM SIGIR Conference, 72–79. ACM.
+
+[Normal] [8] Czerwinski, M., Cutrell, E., & Horvitz, E. (2000). Instant messaging: Effects of relevance and timing. In People and Computers XIV—Usability or Else! Springer.
+
+[Normal] [9] Mark, G., Gudith, D., & Klocke, U. (2008). The cost of interrupted work: More speed and stress. In Proceedings of the SIGCHI Conference on Human Factors in Computing Systems, 107–110. ACM.
+
+[Normal] [10] Mikolov, T., Chen, K., Corrado, G., & Dean, J. (2013). Efficient estimation of word representations in vector space. arXiv preprint arXiv:1301.3781.
+
+[Normal] [11] Le, Q., & Mikolov, T. (2014). Distributed representations of sentences and documents. In Proceedings of the 31st International Conference on Machine Learning, 1188–1196.
+
+[Normal] [12] Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A. N., Kaiser, Ł., & Polosukhin, I. (2017). Attention is all you need. Advances in Neural Information Processing Systems, 30, 5998–6008.
+
+[Normal] [13] Devlin, J., Chang, M.-W., Lee, K., & Toutanova, K. (2019). BERT: Pre-training of deep bidirectional transformers for language understanding. In Proceedings of NAACL-HLT 2019, 4171–4186. Association for Computational Linguistics.
+
+[Normal] [14] Reimers, N., & Gurevych, I. (2019). Sentence-BERT: Sentence embeddings using Siamese BERT-networks. In Proceedings of EMNLP-IJCNLP 2019, 3982–3992. Association for Computational Linguistics.
+
+[Normal] [15] Johnson, J., Douze, M., & Jégou, H. (2019). Billion-scale similarity search with GPUs. IEEE Transactions on Big Data, 7(3), 535–547.
+
+[Normal] [16] Malkov, Y. A., & Yashunin, D. A. (2020). Efficient and robust approximate nearest neighbor search using hierarchical navigable small world graphs. IEEE Transactions on Pattern Analysis and Machine Intelligence, 42(4), 824–836.
+
+[Normal] [17] Lewis, P., Perez, E., Piktus, A., Petroni, F., Karpukhin, V., Goyal, N., Küttler, H., Lewis, M., Yih, W.-T., Rocktäschel, T., & Riedel, S. (2020). Retrieval-augmented generation for knowledge-intensive NLP tasks. Advances in Neural Information Processing Systems, 33.
+
+[Normal] [18] Karpukhin, V., Oguz, B., Min, S., Lewis, P., Wu, L., Edunov, S., Chen, D., & Yih, W.-T. (2020). Dense passage retrieval for open-domain question answering. In Proceedings of EMNLP 2020, 6769–6781. Association for Computational Linguistics.
+
+[Normal] [19] Khattab, O., & Zaharia, M. (2020). ColBERT: Efficient and effective passage search via contextualized late interaction over BERT. In Proceedings of the 43rd International ACM SIGIR Conference on Research and Development in Information Retrieval, 39–48. ACM.
+
+[Normal] [20] Thakur, N., Reimers, N., Rücklé, A., Srivastava, A., & Gurevych, I. (2021). BEIR: A heterogeneous benchmark for zero-shot evaluation of information retrieval models. Advances in Neural Information Processing Systems, 34.
+
+[Normal] [21] Hogan, A., Blomqvist, E., Cochez, M., d'Amato, C., de Melo, G., Gutierrez, C., Kirrane, S., Gayo, J. E. L., Navigli, R., Neumaier, S., Ngonga Ngomo, A.-C., Polleres, A., Rashid, S. M., Rula, A., Schmelzeisen, L., Sequeda, J., Staab, S., & Zimmermann, A. (2021). Knowledge graphs. ACM Computing Surveys, 54(4), Article 71.
+
+[Normal] [22] Bordes, A., Usunier, N., Garcia-Duran, A., Weston, J., & Yakhnenko, O. (2013). Translating embeddings for modeling multi-relational data. In Advances in Neural Information Processing Systems, 26.
+
+[Normal] [23] Perozzi, B., Al-Rfou, R., & Skiena, S. (2014). DeepWalk: Online learning of social representations. In Proceedings of the 20th ACM SIGKDD International Conference on Knowledge Discovery and Data Mining, 701–710. ACM.
+
+[Normal] [24] Grover, A., & Leskovec, J. (2016). node2vec: Scalable feature learning for networks. In Proceedings of the 22nd ACM SIGKDD International Conference on Knowledge Discovery and Data Mining, 855–864. ACM.
+
+[Normal] [25] Wu, Z., Pan, S., Chen, F., Long, G., Zhang, C., & Yu, P. S. (2021). A comprehensive survey on graph neural networks. IEEE Transactions on Neural Networks and Learning Systems, 32(1), 4–24.
+
+[Normal] [26] Radford, A., Kim, J. W., Xu, T., Brockman, G., McLeavey, C., & Sutskever, I. (2023). Robust speech recognition via large-scale weak supervision. In Proceedings of the 40th International Conference on Machine Learning, 28492–28518. PMLR.
+
+[Normal] [27] Schick, T., Dwivedi-Yu, J., Dessì, R., Raileanu, R., Lomeli, M., Hambro, E., Zettlemoyer, L., Cancedda, N., & Scialom, T. (2023). Toolformer: Language models can teach themselves to use tools. Advances in Neural Information Processing Systems, 36.
+
+[Normal] [28] Yao, S., Zhao, J., Yu, D., Du, N., Shafran, I., Narasimhan, K. R., & Cao, Y. (2023). ReAct: Synergizing reasoning and acting in language models. In International Conference on Learning Representations.
+
+[Normal] [29] Shinn, N., Cassano, F., Gopinath, A., Narasimhan, K., & Yao, S. (2023). Reflexion: Language agents with verbal reinforcement learning. Advances in Neural Information Processing Systems, 36.
+
+[Normal] [30] Wu, Q., Bansal, G., Zhang, J., Wu, Y., Zhang, S., Zhu, E., Li, B., Jiang, L., Zhang, X., & Wang, C. (2023). AutoGen: Enabling next-gen LLM applications via multi-agent conversation framework. arXiv preprint arXiv:2308.08155.
+
+[Normal] [31] Park, J. S., O'Brien, J. C., Cai, C. J., Morris, M. R., Liang, P., & Bernstein, M. S. (2023). Generative agents: Interactive simulacra of human behavior. In Proceedings of the 36th Annual ACM Symposium on User Interface Software and Technology. ACM.
+
+[Normal] [32] Packer, C., Wooders, S., Lin, K., Fang, V., Patil, S. G., Stoica, I., & Gonzalez, J. E. (2023). MemGPT: Towards LLMs as operating systems. arXiv preprint arXiv:2310.08560.
+
+[Normal] [33] Deng, X., Gu, Y., Zheng, B., Chen, S., Stevens, S., Wang, B., Sun, H., & Su, Y. (2023). Mind2Web: Towards a generalist agent for the web. Advances in Neural Information Processing Systems, 36, 28091–28114.
+
+[Normal] [34] Zhou, S., Xu, F. F., Zhu, H., Zhou, X., Lo, R., Sridhar, A., Cheng, X., Bisk, Y., Fried, D., Alon, U., et al. (2023). WebArena: A realistic web environment for building autonomous agents. arXiv preprint arXiv:2307.13854.
+
+[Normal] [35] Hong, W., Wang, W., Lv, Q., Xu, J., Yu, W., Ji, J., Wang, Y., Wang, Z., Dong, Y., Ding, M., & Tang, J. (2023). CogAgent: A visual language model for GUI agents. arXiv preprint arXiv:2312.08914.
+
+[Normal] [36] Zhang, C., Yang, Z., Liu, J., Han, Y., Chen, X., Huang, Z., Fu, B., & Yu, D. (2023). AppAgent: Multimodal agents as smartphone users. arXiv preprint arXiv:2312.13771.
+
+[Normal] [37] Zhang, C., Li, L., He, S., Zhang, X., Qiao, B., Qin, S., et al. (2024). UFO: A UI-focused agent for Windows OS interaction. arXiv preprint arXiv:2402.07939.
+
+[Normal] [38] Xie, T., Zhang, D., Chen, J., Li, X., Zhao, S., Cao, R., et al. (2024). OSWorld: Benchmarking multimodal agents for open-ended tasks in real computer environments. Advances in Neural Information Processing Systems, 37, 52040–52094.
+
+[Normal] [39] Bonatti, R., Zhao, D., Bonacci, F., Dupont, D., Abdali, S., Li, Y., Lu, Y., Wagle, J., Koishida, K., Bucker, A., Jang, L. K., & Hui, Z. (2024). Windows Agent Arena: Evaluating multi-modal OS agents at scale. arXiv preprint arXiv:2409.08264.
+
+[Normal] [40] Greshake, K., Abdelnabi, S., Mishra, S., Endres, C., Holz, T., & Fritz, M. (2023). Not what you've signed up for: Compromising real-world LLM-integrated applications with indirect prompt injection. In Proceedings of the 16th ACM Workshop on Artificial Intelligence and Security, 79–90. ACM.

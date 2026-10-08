@@ -60,13 +60,59 @@ class SessionSegmenter:
         duration_seconds = max(0.0, (end_time - start_time).total_seconds())
         event_count = len(sorted_events)
 
-        # Factual extraction: ordered, deduplicated applications and resources
+        from core.continuity.extractor import WorkspaceResourceExtractor, is_protected_resource, is_orbis_control_plane
+
         applications = list(
             dict.fromkeys(e.process_name for e in sorted_events if e.process_name)
         )
-        resources = list(
-            dict.fromkeys(e.resource_path for e in sorted_events if e.resource_path)
-        )
+
+        raw_resources: List[str] = []
+        projects: List[str] = []
+        redacted_count = 0
+        control_plane_events = 0
+
+        for e in sorted_events:
+            exe_path = e.metadata.get("executable_path") if isinstance(e.metadata, dict) else None
+            if is_orbis_control_plane(e.process_name, e.window_title, exe_path):
+                control_plane_events += 1
+
+            # 1. Verified filesystem path if set
+            if e.resource_path:
+                if is_protected_resource(e.resource_path):
+                    redacted_count += 1
+                else:
+                    raw_resources.append(e.resource_path)
+
+            # 2. Check metadata observed_resources or extract from window_title
+            evidence_list = e.metadata.get("observed_resources") if isinstance(e.metadata, dict) else None
+            if evidence_list:
+                for ev in evidence_list:
+                    if ev.get("is_protected") or is_protected_resource(ev.get("name")):
+                        redacted_count += 1
+                    elif ev.get("name"):
+                        raw_resources.append(ev["name"])
+                    if ev.get("project") and ev["project"] not in projects:
+                        projects.append(ev["project"])
+            else:
+                # Extract directly from process_name and window_title
+                ev = WorkspaceResourceExtractor.extract(e.process_name, e.window_title)
+                if ev.is_protected or is_protected_resource(ev.name):
+                    redacted_count += 1
+                elif ev.name:
+                    raw_resources.append(ev.name)
+                if ev.project and ev.project not in projects:
+                    projects.append(ev.project)
+
+            if isinstance(e.metadata, dict) and e.metadata.get("project") and e.metadata["project"] not in projects:
+                projects.append(e.metadata["project"])
+
+        # Filter and deduplicate safe resources
+        safe_resources: List[str] = []
+        for r in raw_resources:
+            if not is_protected_resource(r) and r not in safe_resources:
+                safe_resources.append(r)
+
+        resources = safe_resources
         event_ids = [e.event_id for e in sorted_events]
 
         confidence = self.calculate_confidence(sorted_events, duration_seconds)
@@ -77,12 +123,19 @@ class SessionSegmenter:
             else 0.0
         )
 
+        is_control_plane = (control_plane_events == event_count) and event_count > 0
+
         metadata: Dict[str, Any] = {
             "first_process": applications[0] if applications else None,
             "last_process": sorted_events[-1].process_name,
             "unique_applications_count": len(applications),
             "unique_resources_count": len(resources),
             "average_event_interval_seconds": avg_interval,
+            "projects": projects,
+            "redacted_resources_count": redacted_count,
+            "is_control_plane": is_control_plane,
+            "control_plane_events_count": control_plane_events,
+            "user_workspace_events_count": event_count - control_plane_events,
         }
 
         return Session(

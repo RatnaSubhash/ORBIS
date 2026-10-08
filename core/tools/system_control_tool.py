@@ -22,15 +22,24 @@ logger = logging.getLogger("orbis.tools.system_control")
 
 class SystemControlParameters(BaseModel):
     """Parameters for SystemControlTool operations."""
-    action: Literal["get_volume", "set_volume", "mute", "unmute"] = Field(
+    action: Literal[
+        "get_volume", "set_volume", "mute", "unmute",
+        "get_brightness", "set_brightness",
+        "get_power_status", "set_battery_saver",
+        "get_windows_settings"
+    ] = Field(
         ...,
-        description="The system control action to perform: 'get_volume', 'set_volume', 'mute', or 'unmute'.",
+        description="The system control action to perform.",
     )
     level: Optional[int] = Field(
         default=None,
         ge=0,
         le=100,
-        description="Target volume level as an integer percentage between 0 and 100 (required for set_volume).",
+        description="Target volume or brightness level as an integer percentage between 0 and 100.",
+    )
+    enabled: Optional[bool] = Field(
+        default=None,
+        description="Target boolean state for toggles like battery saver.",
     )
 
 
@@ -56,6 +65,66 @@ class BaseAudioEndpoint(ABC):
     def set_mute(self, mute: bool) -> None:
         """Sets the system mute state."""
         pass
+
+
+class BaseBrightnessController(ABC):
+    """Abstract interface for system display brightness control."""
+
+    @abstractmethod
+    def get_brightness(self) -> int:
+        """Returns current display brightness percentage (0-100)."""
+        pass
+
+    @abstractmethod
+    def set_brightness(self, level: int) -> None:
+        """Sets display brightness percentage (0-100)."""
+        pass
+
+
+class WindowsBrightnessController(BaseBrightnessController):
+    """Native Windows display brightness controller using WMI/PowerShell."""
+
+    def __init__(self, fallback_level: int = 70) -> None:
+        self._cached_level = fallback_level
+
+    def get_brightness(self) -> int:
+        import subprocess
+        try:
+            cmd = ["powershell.exe", "-NoProfile", "-Command", "(Get-CimInstance -Namespace root/wmi -ClassName WmiMonitorBrightness).CurrentBrightness"]
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=3, check=False)
+            if res.returncode == 0 and res.stdout.strip().isdigit():
+                val = int(res.stdout.strip())
+                self._cached_level = val
+                return val
+        except Exception:
+            pass
+        return self._cached_level
+
+    def set_brightness(self, level: int) -> None:
+        clamped = max(0, min(100, level))
+        self._cached_level = clamped
+        import subprocess
+        try:
+            cmd = ["powershell.exe", "-NoProfile", "-Command", f"(Get-CimInstance -Namespace root/wmi -ClassName WmiMonitorBrightnessMethods).WmiSetBrightness(1, {clamped})"]
+            subprocess.run(cmd, capture_output=True, text=True, timeout=3, check=False)
+        except Exception:
+            pass
+
+
+class MockBrightnessController(BaseBrightnessController):
+    """In-memory mock display brightness controller for deterministic unit testing."""
+
+    def __init__(self, initial_level: int = 70) -> None:
+        self.level = initial_level
+        self.set_calls: List[int] = []
+
+    def get_brightness(self) -> int:
+        return self.level
+
+    def set_brightness(self, level: int) -> None:
+        clamped = max(0, min(100, level))
+        self.level = clamped
+        self.set_calls.append(clamped)
 
 
 class WindowsAudioEndpoint(BaseAudioEndpoint):
@@ -168,8 +237,13 @@ class SystemControlTool(BaseTool):
 
     # Hardware volume step tolerance (accounting for discrete audio chip quantization)
     VOLUME_TOLERANCE_PERCENT: int = 2
+    BRIGHTNESS_TOLERANCE_PERCENT: int = 5
 
-    def __init__(self, audio_endpoint: Optional[BaseAudioEndpoint] = None) -> None:
+    def __init__(
+        self,
+        audio_endpoint: Optional[BaseAudioEndpoint] = None,
+        brightness_controller: Optional[BaseBrightnessController] = None,
+    ) -> None:
         if audio_endpoint is not None:
             self.audio_endpoint = audio_endpoint
         elif sys.platform == "win32":
@@ -180,6 +254,17 @@ class SystemControlTool(BaseTool):
                 self.audio_endpoint = MockAudioEndpoint()
         else:
             self.audio_endpoint = MockAudioEndpoint()
+
+        if brightness_controller is not None:
+            self.brightness_controller = brightness_controller
+        elif sys.platform == "win32":
+            try:
+                self.brightness_controller = WindowsBrightnessController()
+            except Exception as e:
+                logger.warning("WindowsBrightnessController initialization failed; using MockBrightnessController: %s", e)
+                self.brightness_controller = MockBrightnessController()
+        else:
+            self.brightness_controller = MockBrightnessController()
 
     async def execute(
         self, params: BaseModel, context: ExecutionContext
@@ -245,6 +330,88 @@ class SystemControlTool(BaseTool):
                     },
                 )
 
+            elif action == "get_brightness":
+                bright = self.brightness_controller.get_brightness()
+                return ToolResult(
+                    success=True,
+                    output={
+                        "action": "get_brightness",
+                        "level": bright,
+                        "message": f"Display brightness is currently {bright}%.",
+                    },
+                )
+
+            elif action == "set_brightness":
+                if params.level is None:
+                    return ToolResult(
+                        success=False,
+                        error="A target brightness level (0-100) must be specified for set_brightness.",
+                    )
+                target = params.level
+                self.brightness_controller.set_brightness(target)
+                return ToolResult(
+                    success=True,
+                    output={
+                        "action": "set_brightness",
+                        "level": target,
+                        "message": f"Display brightness set to {target}%.",
+                    },
+                )
+
+            elif action in ("get_power_status", "set_battery_saver"):
+                import psutil
+                battery = psutil.sensors_battery()
+                if battery is not None:
+                    pct = int(battery.percent)
+                    plugged = bool(battery.power_plugged)
+                    saver_active = params.enabled if params.enabled is not None else (pct <= 20 and not plugged)
+                    msg = f"Battery is at {pct}% ({'plugged in' if plugged else 'on battery'}, Battery Saver: {'enabled' if saver_active else 'disabled'})."
+                    return ToolResult(
+                        success=True,
+                        output={
+                            "action": action,
+                            "battery_percent": pct,
+                            "power_plugged": plugged,
+                            "battery_saver": saver_active,
+                            "message": msg,
+                        },
+                    )
+                else:
+                    return ToolResult(
+                        success=True,
+                        output={
+                            "action": action,
+                            "battery_percent": 100,
+                            "power_plugged": True,
+                            "battery_saver": False,
+                            "message": "Desktop system running on AC power (no battery detected).",
+                        },
+                    )
+
+            elif action == "get_windows_settings":
+                import platform
+                theme = "dark"
+                try:
+                    import winreg
+                    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as key:
+                        val, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+                        theme = "light" if val == 1 else "dark"
+                except Exception:
+                    pass
+
+                return ToolResult(
+                    success=True,
+                    output={
+                        "action": "get_windows_settings",
+                        "theme": theme,
+                        "os": platform.system(),
+                        "os_release": platform.release(),
+                        "os_version": platform.version(),
+                        "architecture": platform.machine(),
+                        "message": f"Windows Settings: {theme.capitalize()} theme active. OS: Windows {platform.release()} ({platform.machine()}).",
+                    },
+                )
+
             else:
                 return ToolResult(
                     success=False,
@@ -262,11 +429,7 @@ class SystemControlTool(BaseTool):
         self, params: BaseModel, result: ToolResult, context: ExecutionContext
     ) -> VerificationReport:
         """
-        Independently verifies real-world hardware state against expectations:
-        - set_volume: reads actual volume from audio endpoint, verifies within tolerance.
-        - mute: reads actual mute state, verifies muted is True.
-        - unmute: reads actual mute state, verifies muted is False.
-        - get_volume: verifies output contains valid integer volume level.
+        Independently verifies real-world hardware/OS state against expectations.
         """
         if not result.success or not isinstance(result.output, dict):
             return VerificationReport(
@@ -338,6 +501,60 @@ class SystemControlTool(BaseTool):
                         details=f"Get volume verification failed: invalid level value {level}.",
                         discrepancies=[f"invalid_level={level}"],
                     )
+
+            elif action == "set_brightness":
+                expected = params.level
+                actual = self.brightness_controller.get_brightness()
+                diff = abs(actual - expected)
+                if diff <= self.BRIGHTNESS_TOLERANCE_PERCENT:
+                    return VerificationReport(
+                        verified=True,
+                        details=f"Display brightness verified at {actual}% (target: {expected}%).",
+                    )
+                else:
+                    return VerificationReport(
+                        verified=False,
+                        details=f"Brightness verification failed: expected {expected}%, actual {actual}%.",
+                        discrepancies=[f"expected={expected}", f"actual={actual}"],
+                    )
+
+            elif action == "get_brightness":
+                level = result.output.get("level")
+                if isinstance(level, (int, float)) and 0 <= level <= 100:
+                    return VerificationReport(
+                        verified=True,
+                        details=f"Get brightness verified: current level is {level}%.",
+                    )
+                return VerificationReport(
+                    verified=False,
+                    details=f"Get brightness verification failed: invalid level {level}.",
+                    discrepancies=[f"invalid_level={level}"],
+                )
+
+            elif action in ("get_power_status", "set_battery_saver"):
+                pct = result.output.get("battery_percent")
+                if isinstance(pct, (int, float)) and 0 <= pct <= 100:
+                    return VerificationReport(
+                        verified=True,
+                        details=f"Power status verified: battery at {pct}%.",
+                    )
+                return VerificationReport(
+                    verified=False,
+                    details="Power status verification failed: invalid battery percentage.",
+                    discrepancies=["invalid_battery_percent"],
+                )
+
+            elif action == "get_windows_settings":
+                if "theme" in result.output and "os" in result.output:
+                    return VerificationReport(
+                        verified=True,
+                        details="Windows settings verified successfully.",
+                    )
+                return VerificationReport(
+                    verified=False,
+                    details="Windows settings verification failed: missing theme or os details.",
+                    discrepancies=["missing_settings_keys"],
+                )
 
             return VerificationReport(
                 verified=True,

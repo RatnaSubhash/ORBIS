@@ -155,14 +155,39 @@ class ContextDNASynthesizer:
         }
 
     def _build_resource_context(
-        self, session: Session, events: List[WorkspaceEvent]
+        self, session: Session, events: Optional[List[WorkspaceEvent]]
     ) -> Dict[str, Any]:
         """Factual observed resource metadata (paths, extensions, directories)."""
-        observed_paths = list(session.resources)
-        if not observed_paths and events:
-            observed_paths = list(
-                dict.fromkeys(e.resource_path for e in events if e.resource_path)
-            )
+        from core.continuity.extractor import WorkspaceResourceExtractor, is_protected_resource
+
+        observed_paths: List[str] = [
+            r for r in session.resources if not is_protected_resource(r)
+        ]
+        projects: List[str] = list(session.session_metadata.get("projects", [])) if session.session_metadata else []
+
+        # If empty but events are available, backfill from events
+        if (not observed_paths or not projects) and events:
+            for e in events:
+                evidence_list = e.metadata.get("observed_resources") if isinstance(e.metadata, dict) else None
+                if evidence_list:
+                    for ev in evidence_list:
+                        if not ev.get("is_protected") and not is_protected_resource(ev.get("name")):
+                            name = ev.get("name")
+                            if name and name not in observed_paths:
+                                observed_paths.append(name)
+                        proj = ev.get("project")
+                        if proj and proj not in projects:
+                            projects.append(proj)
+                else:
+                    ev = WorkspaceResourceExtractor.extract(e.process_name, e.window_title)
+                    if not ev.is_protected and not is_protected_resource(ev.name):
+                        if ev.name and ev.name not in observed_paths:
+                            observed_paths.append(ev.name)
+                    if ev.project and ev.project not in projects:
+                        projects.append(ev.project)
+
+                if e.resource_path and not is_protected_resource(e.resource_path) and e.resource_path not in observed_paths:
+                    observed_paths.append(e.resource_path)
 
         extensions: List[str] = []
         directories: List[str] = []
@@ -174,7 +199,7 @@ class ContextDNASynthesizer:
                 if suffix and suffix not in extensions:
                     extensions.append(suffix)
                 parent_dir = str(p.parent)
-                if parent_dir and parent_dir not in directories:
+                if parent_dir and parent_dir != "." and parent_dir not in directories:
                     directories.append(parent_dir)
             except Exception:
                 continue
@@ -184,6 +209,7 @@ class ContextDNASynthesizer:
             "resource_count": len(observed_paths),
             "resource_extensions": extensions,
             "workspace_directories": directories,
+            "projects": projects,
         }
 
     def _build_activity_context(
@@ -227,6 +253,8 @@ class ContextDNASynthesizer:
             for e in events:
                 if e.metadata and e.metadata.get("redacted"):
                     redaction_count += 1
+        if session.session_metadata and session.session_metadata.get("redacted_resources_count"):
+            redaction_count = max(redaction_count, session.session_metadata["redacted_resources_count"])
 
         return {
             "privacy_exclusions_active": True,

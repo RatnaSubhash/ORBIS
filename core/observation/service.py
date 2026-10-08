@@ -102,15 +102,33 @@ class WorkspaceObservationService:
         else:
             event_type = WorkspaceEventType.WINDOW_ACTIVATED
 
+        from core.continuity.extractor import WorkspaceResourceExtractor, is_orbis_control_plane
+
+        is_control_plane = is_orbis_control_plane(
+            window.process_name, window.title, window.executable_path
+        )
+        metadata = {
+            "hwnd": window.hwnd,
+            "executable_path": window.executable_path,
+        }
+        if is_control_plane:
+            metadata["is_control_plane"] = True
+            metadata["control_plane_source"] = "orbis_electron"
+
+        evidence = WorkspaceResourceExtractor.extract(window.process_name, window.title)
+        if evidence.resource_type in ("file", "project", "directory") or evidence.name or evidence.project:
+            metadata["observed_resources"] = [evidence.to_dict()]
+            if evidence.project:
+                metadata["project"] = evidence.project
+            if evidence.is_protected:
+                metadata["redacted"] = True
+
         event = WorkspaceEvent(
             event_type=event_type,
             process_name=window.process_name,
             process_id=window.process_id,
             window_title=window.title,
-            metadata={
-                "hwnd": window.hwnd,
-                "executable_path": window.executable_path,
-            },
+            metadata=metadata,
         )
 
         # Update trackers

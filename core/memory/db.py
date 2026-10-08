@@ -406,7 +406,7 @@ class DatabaseManager:
             query += " AND end_time <= ?"
             params.append(end_time.isoformat())
 
-        query += " ORDER BY start_time ASC LIMIT ?;"
+        query += " ORDER BY start_time DESC LIMIT ?;"
         params.append(limit)
 
         with self.get_connection() as conn:

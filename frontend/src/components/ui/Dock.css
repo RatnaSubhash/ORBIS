@@ -1,0 +1,103 @@
+/* ── Official React Bits Dock Styling (Zero-Flicker Window Fixed Bottom) ── */
+
+.dock-outer {
+  position: fixed !important;
+  bottom: 20px !important;
+  left: 50% !important;
+  transform: translateX(-50%) !important;
+  z-index: 1000 !important;
+  display: flex !important;
+  justify-content: center !important;
+  align-items: center !important;
+  pointer-events: auto !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  max-width: 90vw;
+}
+
+.dock-panel {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  gap: 8px;
+  border-radius: 16px;
+  background-color: rgba(14, 12, 22, 0.92);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  padding: 0 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.75), 0 0 24px rgba(51, 204, 221, 0.12);
+  overflow: visible;
+  pointer-events: auto;
+  user-select: none;
+  touch-action: pan-y;
+}
+
+.dock-item-slot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.dock-item {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background-color: rgba(22, 22, 30, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.2s, background-color 0.2s, box-shadow 0.2s;
+  will-change: transform;
+  transform-origin: center bottom;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.dock-item:hover,
+.dock-item:focus-visible {
+  border-color: rgba(51, 204, 221, 0.6);
+  background-color: rgba(30, 34, 48, 0.95);
+  box-shadow: 0 0 16px rgba(51, 204, 221, 0.35);
+}
+
+.dock-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #e4e4e7;
+  pointer-events: none;
+}
+
+.dock-icon .dock-svg {
+  width: 18px;
+  height: 18px;
+  stroke-width: 2px;
+}
+
+.dock-label {
+  position: absolute;
+  top: -2.2rem;
+  left: 50%;
+  width: fit-content;
+  white-space: pre;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background-color: rgba(12, 12, 18, 0.96);
+  backdrop-filter: blur(12px);
+  padding: 3px 8px;
+  font-size: 0.74rem;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  color: #f4f4f5;
+  pointer-events: none;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.7);
+  z-index: 1050;
+}

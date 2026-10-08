@@ -135,6 +135,33 @@ def format_useful_tool_output(tool_name: str, output: Any, step_params: Optional
         elif action == "unmute":
             return f"Master volume unmuted (current volume: {vol}%)." if vol is not None else "Master volume unmuted."
 
+    # 9. Restoration tool (Phase 10 / Workspace Restoration)
+    if tool_name in ("restoration_tool", "restoration") and isinstance(output, dict):
+        status = output.get("status")
+        if status == "executed":
+            res = output.get("result", {})
+            summary = res.get("summary")
+            if summary:
+                return str(summary)
+            if res.get("success"):
+                completed = len(res.get("completed_steps", []))
+                return f"Workspace restored successfully ({completed} step{'s' if completed != 1 else ''} completed)."
+            else:
+                failed = len(res.get("failed_steps", []))
+                return f"Workspace restoration encountered {failed} issue{'s' if failed != 1 else ''}."
+        elif status == "plan_generated":
+            plan = output.get("plan", {})
+            summary = plan.get("summary")
+            if summary:
+                return f"Restoration plan ready: {summary}"
+            step_count = len(plan.get("steps", []))
+            return f"Generated restoration plan with {step_count} step{'s' if step_count != 1 else ''}."
+        elif status == "failed_to_plan":
+            msg = output.get("message")
+            if msg:
+                return str(msg)
+            return "Could not generate workspace restoration plan."
+
     return None
 
 
@@ -295,6 +322,12 @@ class AgentOrchestrator:
         conversation_context: Optional[ConversationContext] = None,
         event_bus: Optional[EventBus] = None,
     ) -> None:
+        if tool_registry is None:
+            try:
+                from core.tools.registry import create_default_tool_registry
+                tool_registry = create_default_tool_registry(llm_provider=llm_provider, db=db_manager)
+            except Exception:
+                pass
         self.llm_provider = llm_provider
         self.tool_registry = tool_registry
         self.db_manager = db_manager
@@ -305,9 +338,30 @@ class AgentOrchestrator:
         self.executor = executor
         self.voice_service = voice_service
         self.conversation_context: ConversationContext = conversation_context or ConversationContext()
+        self._conversations: Dict[str, ConversationContext] = {}
+        if conversation_context is not None:
+            self._conversations["default"] = self.conversation_context
         self.event_bus: EventBus = event_bus if event_bus is not None else EventBus()
         self._pending_approval: Optional[PendingApproval] = None
         self._listeners: List[EventListener] = []
+
+    def get_conversation_context(self, conversation_id: Optional[str] = None) -> ConversationContext:
+        """Retrieves or lazily initializes the ConversationContext for the specified session."""
+        if not conversation_id or conversation_id == "default":
+            return self.conversation_context
+        if conversation_id not in self._conversations:
+            self._conversations[conversation_id] = ConversationContext()
+        return self._conversations[conversation_id]
+
+    def reset_conversation(self, conversation_id: Optional[str] = None) -> None:
+        """Clears the conversational context for a given session or all sessions."""
+        if conversation_id and conversation_id in self._conversations:
+            self._conversations[conversation_id].clear()
+        elif not conversation_id or conversation_id == "default":
+            self.conversation_context.clear()
+            for ctx in self._conversations.values():
+                ctx.clear()
+            self._conversations.clear()
 
     def _emit_agent_event(
         self,
@@ -686,13 +740,17 @@ class AgentOrchestrator:
 
         # Record conversational turn
         artifact_info = tool_result.output if tool_name == "document" and isinstance(tool_result.output, dict) else None
-        self.conversation_context.record_turn(
+        continuity_data = tool_result.output if (tool_name in ("continuity_tool", "continuity") and isinstance(tool_result.output, dict)) else None
+        active_conv_id = ctx.metadata.get("conversation_id") if (ctx and ctx.metadata) else None
+        conv_ctx = self.get_conversation_context(active_conv_id)
+        conv_ctx.record_turn(
             user_query=user_request,
             resolved_query=user_request,
             response_text=user_summary,
             tool_name=tool_name,
             tool_result_summary=user_summary,
             artifact=artifact_info,
+            continuity_data=continuity_data,
         )
 
         await self._emit_event(
@@ -712,7 +770,7 @@ class AgentOrchestrator:
             verification=verification,
         )
 
-    async def run_continuity(self, query: str) -> Any:
+    async def run_continuity(self, query: str, reference_time: Optional[datetime] = None) -> Any:
         """
         Phase 5 Vertical-Slice Helper:
         Directly executes a continuity query via ContinuityService.
@@ -730,7 +788,7 @@ class AgentOrchestrator:
                 temp_db.initialize()
                 service = ContinuityService(db=temp_db)
 
-        return service.execute_query(query)
+        return service.execute_query(query, cutoff_time=reference_time)
 
     async def run_intent_continuity(self, query: str) -> Any:
         """
@@ -826,6 +884,8 @@ class AgentOrchestrator:
         task_id = ctx.task_id
         correlation_id = ctx.metadata.get("correlation_id") or f"corr_{task_id}"
         ctx.metadata["correlation_id"] = correlation_id
+        if approval_callback is not None:
+            ctx.metadata["approval_callback"] = approval_callback
 
         # 1. Check for Pending Approval
         if self._pending_approval is not None:
@@ -913,9 +973,17 @@ class AgentOrchestrator:
             event_bus=self.event_bus,
         )
 
-        # Resolve conversational continuity (pronouns, references, topic return)
-        resolution = self.conversation_context.resolve_query(user_request)
+        # Resolve conversational continuity (pronouns, references, topic return) per conversation session
+        conv_id = ctx.metadata.get("conversation_id") if ctx.metadata else None
+        conv_ctx = self.get_conversation_context(conv_id)
+        resolution = conv_ctx.resolve_query(user_request)
         if resolution.is_ambiguous and resolution.clarification_message:
+            conv_ctx.record_turn(
+                user_query=user_request,
+                resolved_query=user_request,
+                response_text=resolution.clarification_message,
+                intent_type=str(resolution.intent_type) if resolution.intent_type else None,
+            )
             plan = TaskPlan(
                 request_id=context.task_id if context else "ambiguous",
                 user_prompt=user_request,
@@ -931,6 +999,10 @@ class AgentOrchestrator:
             )
 
         effective_request = resolution.resolved_query
+        if resolution.comparison:
+            ctx.metadata["comparison"] = resolution.comparison
+        if resolution.intent_type:
+            ctx.metadata["intent_type"] = str(resolution.intent_type)
 
         if plan is None:
             request = AgentRequest(
@@ -1079,13 +1151,31 @@ class AgentOrchestrator:
                 if last_step:
                     last_tool = last_step.tool_name
 
-            self.conversation_context.record_turn(
+            continuity_data = None
+            if last_tool in ("continuity_tool", "continuity") and isinstance(exec_res.final_output, dict):
+                continuity_data = exec_res.final_output
+            elif exec_res.step_results and exec_res.plan:
+                for s_id, s_res in exec_res.step_results.items():
+                    step = exec_res.plan.steps.get(s_id)
+                    if step and step.tool_name in ("continuity_tool", "continuity"):
+                        output_val = getattr(s_res, "output", None)
+                        if isinstance(output_val, dict):
+                            continuity_data = output_val
+                            break
+                        elif isinstance(s_res, dict) and isinstance(s_res.get("output"), dict):
+                            continuity_data = s_res["output"]
+                            break
+
+            conv_ctx.record_turn(
                 user_query=user_request,
                 resolved_query=effective_request,
                 response_text=clean_answer,
                 tool_name=last_tool,
                 tool_result_summary=clean_answer,
                 artifact=artifact_info,
+                comparison=resolution.comparison,
+                intent_type=str(resolution.intent_type) if resolution.intent_type else None,
+                continuity_data=continuity_data,
             )
 
         # Emit terminal task status event

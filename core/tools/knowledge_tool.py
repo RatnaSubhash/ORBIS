@@ -61,6 +61,18 @@ class KnowledgeParameters(BaseModel):
         default=None,
         description="The user intent action (e.g., 'build', 'design', 'create', 'plan', 'assist').",
     )
+    concept_a: Optional[str] = Field(
+        default=None,
+        description="The primary concept in a comparison request (e.g., 'TCP', 'mutex', 'Docker').",
+    )
+    concept_b: Optional[str] = Field(
+        default=None,
+        description="The secondary concept in a comparison request (e.g., 'UDP', 'semaphore', 'Kubernetes').",
+    )
+    dimension: Optional[str] = Field(
+        default=None,
+        description="Optional evaluation dimension or tradeoff aspect (e.g., 'speed', 'reliability', 'ease of deployment').",
+    )
     context_data: Optional[str] = Field(
         default=None,
         description="Optional supplementary context data to incorporate into the explanation.",
@@ -200,6 +212,9 @@ class KnowledgeTool(BaseTool):
             system_prompt = get_knowledge_system_prompt(mode)
             if mode == "project_assistance":
                 user_prompt = f"User Request: I want to {intent} a {subject}."
+            elif mode == "comparison" and getattr(params, "concept_a", None) and getattr(params, "concept_b", None):
+                dim_str = f" Focus particularly on {params.dimension}." if getattr(params, "dimension", None) else ""
+                user_prompt = f"User Request: Compare {params.concept_a} and {params.concept_b}.{dim_str}"
             else:
                 user_prompt = f"User Request: {query}"
             if params.context_data:
@@ -424,6 +439,14 @@ class KnowledgeTool(BaseTool):
             return VerificationReport(
                 verified=False,
                 details="Verification failed: generated answer is an echo of the query.",
+            )
+
+        # Reject answers that contain unresolved placeholder tokens like [Concept 1], [Concept 2], <concept>, etc.
+        placeholder_match = re.search(r"\[(?:concept|entity|topic|subject|item|placeholder)\s*\d*\]", answer, re.IGNORECASE)
+        if placeholder_match:
+            return VerificationReport(
+                verified=False,
+                details=f"Verification failed: generated answer contains unresolved placeholder token '{placeholder_match.group(0)}'.",
             )
 
         # For project assistance, verify no conversational wrappers in subject
